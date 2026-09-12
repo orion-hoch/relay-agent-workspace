@@ -6,6 +6,7 @@ import { DeepDiveAvatar } from '@/components/DeepDiveAvatar';
 import './components/deep-dive-avatar.css';
 import type { RunMode } from '@/lib/buzz/types';
 import { buzz, useBuzz } from '@/lib/buzz/store';
+import { useWorkspaceSetting } from '@/lib/buzz/use-workspace-setting';
 import {
   AgentAvatar,
   setAgentActivity,
@@ -129,41 +130,6 @@ function MemberClearance({ member }: { member?: WorkspaceMember }) {
     </span>
   ) : null;
 }
-const seedReplies: Record<
-  string,
-  { memberId?: string; name: string; text: string; time: string }[]
-> = {
-  m1: [
-    {
-      memberId: 'marcus',
-      name: 'Marcus Reed',
-      text: 'Thanks. Keeping rollout notes in this room too.',
-      time: '9:20 AM',
-    },
-    {
-      memberId: 'olivia',
-      name: 'Olivia Chen',
-      text: 'Great — one place for the final decisions.',
-      time: '9:21 AM',
-    },
-  ],
-  m3: [
-    {
-      memberId: 'olivia',
-      name: 'Olivia Chen',
-      text: '10:30 works for CS. I’ll update the calendar.',
-      time: '9:25 AM',
-    },
-  ],
-  m4: [
-    {
-      memberId: 'you',
-      name: 'You',
-      text: 'Use “account team” instead of a general inbox. Otherwise looks good.',
-      time: '9:39 AM',
-    },
-  ],
-};
 function messageText(text: string): ReactNode {
   return text.split(/(\*\*[^*]+\*\*|@[\w-]+)/g).map((part, index) =>
     part.startsWith('**') ? (
@@ -204,7 +170,7 @@ export function Workspace() {
   );
 
   const [view, setView] = useState<View>('chat');
-  const [channel, setChannel] = useState('launch-room');
+  const [channel, setChannel] = useState('');
   const [runModes, setRunModes] = useState<Record<string, RunMode>>({});
   const {
     messages: sharedMessages,
@@ -213,18 +179,10 @@ export function Workspace() {
     approvals,
     loaded: sharedLoaded,
   } = useBuzz();
-  const [localChannels, setLocalChannels] = useState<string[]>([
-    'launch-room',
-    'engineering',
-    'customer-success',
-  ]);
-  const channels = useMemo(
-    () => [
-      ...sharedChannels,
-      ...localChannels.filter((name) => !sharedChannels.includes(name)),
-    ],
-    [sharedChannels, localChannels],
-  );
+  const channels = sharedChannels;
+  useEffect(() => {
+    if (!channel && channels.length) setChannel(channels[0]);
+  }, [channel, channels]);
   const messagesByRoom = useMemo(() => {
     const rooms: Record<string, Message[]> = {};
     for (const record of sharedMessages) {
@@ -275,6 +233,11 @@ export function Workspace() {
   }, [members, runs]);
   const [draft, setDraft] = useState('');
   const [toast, setToast] = useState('');
+  useEffect(() => {
+    const notice = (event: Event) => setToast(String((event as CustomEvent).detail));
+    window.addEventListener('shoal:notice', notice);
+    return () => window.removeEventListener('shoal:notice', notice);
+  }, []);
   const homes = useAgentHomes();
   useEffect(() => {
     members.forEach((member) => {
@@ -302,10 +265,7 @@ export function Workspace() {
   const [newChannel, setNewChannel] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [channelName, setChannelName] = useState('');
-  const [canvases, setCanvases] = useState<Record<string, string>>({
-    'launch-room':
-      '# Launch room\n\nDecision log\n- Confirm handoff window\n- Review customer draft\n- Keep launch checklist current',
-  });
+  const [canvases, setCanvases] = useWorkspaceSetting<Record<string, string>>('canvases', {});
   const canvas = canvases[channel] ?? '';
   const setCanvas = (value: string) =>
     setCanvases((all) => ({ ...all, [channel]: value }));
@@ -316,6 +276,8 @@ export function Workspace() {
     approvals.find(item => item.id === selectedApprovalId) ?? approvals.find((item) => item.status === 'Pending') ?? approvals[0];
   const approval = activeApproval?.status ?? 'No pending review';
   const [approvalBusy, setApprovalBusy] = useState(false);
+  const approvalActionable = !!activeApproval && activeApproval.status === 'Pending' && !activeApproval.receipt
+    && (!activeApproval.expiresAt || Date.parse(activeApproval.expiresAt) > Date.now());
   const [replies, setReplies] = useState<Record<string, string[]>>({});
   const [preferences, setPreferences] = useState([true, false, true]);
   const [reactionCounts, setReactionCounts] = useState<Record<string, number>>(
@@ -331,16 +293,11 @@ export function Workspace() {
             replies?: Record<string, string[]>;
             reactions?: Record<string, number>;
             preferences?: boolean[];
-            canvas?: string;
-            canvases?: Record<string, string>;
             draft?: string;
           };
           if (data.replies) setReplies(data.replies);
           if (data.reactions) setReactionCounts(data.reactions);
           if (data.preferences?.length === 3) setPreferences(data.preferences);
-          if (data.canvases) setCanvases(data.canvases);
-          else if (typeof data.canvas === 'string')
-            setCanvases({ 'launch-room': data.canvas });
           if (typeof data.draft === 'string') setDraft(data.draft);
         }
       } catch {
@@ -359,14 +316,13 @@ export function Workspace() {
           replies,
           reactions: reactionCounts,
           preferences,
-          canvases,
           draft,
         }),
       );
     } catch {
       /* Session state remains usable if browser storage is full. */
     }
-  }, [hydrated, replies, reactionCounts, preferences, canvases, draft]);
+  }, [hydrated, replies, reactionCounts, preferences, draft]);
   const currentRef = useRef({ channel, view });
   useEffect(() => {
     currentRef.current = { channel, view };
@@ -490,7 +446,7 @@ export function Workspace() {
             ) => {
               if (options?.signal?.aborted) throw new Error('Aborted');
               return result({
-                workspace: 'Meridian',
+                workspace: workspaceName,
                 ...currentRef.current,
                 localOnly: true,
                 serversConnected: false,
@@ -556,7 +512,7 @@ export function Workspace() {
   }
   function send() {
     const text = draft.trim();
-    if (!text) return;
+    if (!text || !channel) return;
     if (!sharedLoaded) return notify('The shared workspace is still connecting. Try again shortly.');
     const room = channel;
     setDraft('');
@@ -594,7 +550,7 @@ export function Workspace() {
       });
   }
   async function decideApproval(decision: 'Approved' | 'Rejected') {
-    if (!activeApproval || approvalBusy) return;
+    if (!activeApproval || approvalBusy || !approvalActionable) return;
     setApprovalBusy(true);
     try {
       await buzz.decide(activeApproval.id, decision, activeApproval.action);
@@ -607,13 +563,16 @@ export function Workspace() {
       setApprovalBusy(false);
     }
   }
-  function addChannel(e: SyntheticEvent<HTMLFormElement>) {
+  async function addChannel(e: SyntheticEvent<HTMLFormElement>) {
     e.preventDefault();
     const name = channelName.trim().toLowerCase().replace(/\s+/g, '-');
     if (!name) return;
-    setLocalChannels((items) =>
-      items.includes(name) ? items : [...items, name],
-    );
+    try {
+      await buzz.createChannel(name);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Could not create channel.');
+      return;
+    }
 
     setDm(null);
     setChannel(name);
@@ -701,7 +660,6 @@ export function Workspace() {
                 >
                   <Hash size={16} />
                   <span>{name}</span>
-                  {name === 'launch-room' && <span className="rail-dot" />}
                 </SidebarMenuButton>
               </SidebarMenuItem>
             ))}
@@ -982,42 +940,10 @@ export function Workspace() {
                     </div>
                   </div>
                   <div className="thread-reply-divider">
-                    {(seedReplies[thread.id]?.length ?? 0) +
-                      (replies[thread.id]?.length ?? 0) +
+                    {(replies[thread.id]?.length ?? 0) +
                       threadMessages.length}{' '}
                     replies
                   </div>
-                  {(seedReplies[thread.id] ?? []).map((reply, index) => (
-                    <div className="thread-message" key={`seed-${index}`}>
-                      <MemberAvatar
-                        member={resolveMember(
-                          members,
-                          reply.memberId,
-                          reply.name,
-                        )}
-                        name={reply.name}
-                        initials={reply.name.slice(0, 2)}
-                        size={36}
-                      />
-                      <div>
-                        <div className="message-meta">
-                          <strong>
-                            {resolveMember(members, reply.memberId, reply.name)
-                              ?.name ?? reply.name}
-                          </strong>
-                          <MemberClearance
-                            member={resolveMember(
-                              members,
-                              reply.memberId,
-                              reply.name,
-                            )}
-                          />
-                          <time>{reply.time}</time>
-                        </div>
-                        <div className="message-text">{reply.text}</div>
-                      </div>
-                    </div>
-                  ))}
                   {(replies[thread.id] ?? []).map((reply, index) => (
                     <div className="thread-message" key={`old-${index}`}>
                       <MemberAvatar
@@ -1292,7 +1218,7 @@ export function Workspace() {
           <DialogFooter>
             <button
               className="btn btn-secondary"
-              disabled={approvalBusy || activeApproval?.status !== 'Pending'}
+              disabled={approvalBusy || !approvalActionable}
               onClick={() => {
                 void decideApproval('Rejected');
               }}
@@ -1301,7 +1227,7 @@ export function Workspace() {
             </button>
             <button
               className="btn btn-primary"
-              disabled={approvalBusy || activeApproval?.status !== 'Pending'}
+              disabled={approvalBusy || !approvalActionable}
               onClick={() => {
                 void decideApproval('Approved');
               }}
@@ -1444,6 +1370,12 @@ function Chat({
   navigate: (value: string) => void;
   notify: (message: string) => void;
 }) {
+  const { documents, approvals } = useBuzz();
+  const roomAgents = members.filter(member => member.kind === 'agent'
+    && (member.id === recipient?.id || messages.some(message => message.memberId === member.id)));
+  const roomDocuments = documents.filter(document => messages.some(message => message.attachment?.name === document.name));
+  const messageApproval = (message: Message) => message.runId ? approvals.find(item => item.runId === message.runId && item.status === 'Pending'
+    && !item.receipt && (!item.expiresAt || Date.parse(item.expiresAt) > Date.now())) : undefined;
   const [contextOpen, setContextOpen] = useState(false);
   const [composerMenu, setComposerMenu] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1654,15 +1586,15 @@ function Chat({
                         <ChevronRight size={14} />
                       </button>
                     )}
-                    {m.id === 'm4' && (
+                    {messageApproval(m) && (
                       <div className="approval-preview">
                         <button
                           className="btn btn-secondary"
-                          onClick={() => reviewDraft()}
+                          onClick={() => reviewDraft(messageApproval(m)?.id)}
                         >
-                          <FileText size={14} /> Review draft
+                          <FileText size={14} /> Review action
                         </button>
-                        <span className="badge">{approval}</span>
+                        <span className="badge">{messageApproval(m)?.status}</span>
                       </div>
                     )}
                     <div className="message-reactions">
@@ -1675,19 +1607,14 @@ function Chat({
                           {(m.reactions || 0) + (reactionCounts[m.id] || 0)}
                         </button>
                       )}
-                      {(replies[m.id]?.length || 0) +
-                        (seedReplies[m.id]?.length || 0) >
-                        0 && (
+                      {(replies[m.id]?.length || 0) > 0 && (
                         <button
                           className="reply-action"
                           onClick={() => setThread(m)}
                         >
                           <MessageCircle size={13} />
-                          {(replies[m.id]?.length || 0) +
-                            (seedReplies[m.id]?.length || 0)}{' '}
-                          {(replies[m.id]?.length || 0) +
-                            (seedReplies[m.id]?.length || 0) ===
-                          1
+                          {replies[m.id]?.length || 0}{' '}
+                          {(replies[m.id]?.length || 0) === 1
                             ? 'reply'
                             : 'replies'}
                         </button>
@@ -1815,42 +1742,17 @@ function Chat({
                   <span>AGENTS IN THIS ROOM</span>
                   <button onClick={() => navigate('agents')}>View all</button>
                 </div>
-                <button
+                {roomAgents.map(agent => <button
                   className="context-agent"
-                  onClick={() => navigate('agents')}
+                  key={agent.id}
+                  onClick={() => openMember(agent)}
                 >
-                  <AgentAvatar
-                    identityKey="atlas"
-                    character="octopus"
-                    size={32}
-                    label="Atlas"
-                  />
+                  <MemberAvatar member={agent} size={32} />
                   <span>
-                    <strong>
-                      Atlas <span className="tiny-route local">LOCAL</span>
-                    </strong>
-                    <small>Engineering partner · GB10</small>
+                    <strong>{agent.name} <span className={`tiny-route ${agent.kind === 'agent' ? agent.runtime : 'local'}`}>{agent.kind === 'agent' ? agent.runtime.toUpperCase() : ''}</span></strong>
+                    <small>{agent.kind === 'agent' ? agent.model : ''}</small>
                   </span>
-                  <span className="status-dot green" />
-                </button>
-                <button
-                  className="context-agent"
-                  onClick={() => navigate('agents')}
-                >
-                  <AgentAvatar
-                    identityKey="nova"
-                    character="seahorse"
-                    size={32}
-                    label="Nova"
-                  />
-                  <span>
-                    <strong>
-                      Nova <span className="tiny-route cloud">CLOUD</span>
-                    </strong>
-                    <small>Creative partner · draft mode</small>
-                  </span>
-                  <span className="status-dot blue" />
-                </button>
+                </button>)}
                 <button
                   className="add-agent-link"
                   onClick={() => navigate('agents')}
@@ -1863,48 +1765,13 @@ function Chat({
                   <span>SHARED FILES</span>
                   <button onClick={() => setTab('files')}>See all</button>
                 </div>
-                {[
-                  'Launch checklist.pdf',
-                  'Customer handoff.md',
-                  'Decision log',
-                ].map((f, i) => (
-                  <button
-                    className="context-document"
-                    key={f}
-                    onClick={() => setTab('files')}
-                  >
-                    <span
-                      className={`document-icon ${i === 1 ? 'green' : i === 2 ? 'amber' : ''}`}
-                    >
-                      <FileText size={15} />
-                    </span>
-                    <span>
-                      <strong>{f}</strong>
-                      <small>
-                        <Users size={10} />{' '}
-                        {i === 0 ? 'Olivia Chen' : 'Launch room'}
-                      </small>
-                    </span>
+                {roomDocuments.map(document => (
+                  <button className="context-document" key={document.id} onClick={() => setTab('files')}>
+                    <span className="document-icon"><FileText size={15} /></span>
+                    <span><strong>{document.name}</strong><small><Users size={10} /> {document.collection}</small></span>
                     <ChevronRight size={14} />
                   </button>
                 ))}
-              </div>
-              <div className="launch-card">
-                <div>
-                  <span className="badge badge-blue">PROJECT</span>
-                  <MoreHorizontal size={15} />
-                </div>
-                <h3>Meridian launch</h3>
-                <p>
-                  Keep the handoff visible and review the final customer note.
-                </p>
-                <div className="progress-track">
-                  <span className="progress-fill" style={{ width: '72%' }} />
-                </div>
-                <div className="launch-progress">
-                  <span>6 of 8 tasks</span>
-                  <strong>72%</strong>
-                </div>
               </div>
               <div className="context-note">
                 <ShieldCheck size={14} />
@@ -1941,21 +1808,10 @@ function Chat({
                 <Database size={15} /> Browse Data
               </button>
             </div>
-            {[
-              'Launch checklist.pdf',
-              'Customer handoff.md',
-              'Decision log',
-            ].map((f) => (
-              <button
-                className="list-row"
-                key={f}
-                onClick={() => navigate('data')}
-              >
+            {roomDocuments.map(document => (
+              <button className="list-row" key={document.id} onClick={() => navigate('data')}>
                 <FileText size={17} />
-                <span>
-                  <strong>{f}</strong>
-                  <small className="muted">Workspace files</small>
-                </span>
+                <span><strong>{document.name}</strong><small className="muted">{document.collection} · {document.status}</small></span>
                 <ChevronRight size={16} />
               </button>
             ))}

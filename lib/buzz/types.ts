@@ -146,6 +146,7 @@ export type NodeRecord = {
 export type EventRecord = { seq: number; ts: string; type: string; payload: Record<string, unknown> };
 
 export type WorkspaceState = {
+  uiState: Record<string, unknown>;
   members: MemberRecord[];
   channels: string[];
   messages: MessageRecord[];

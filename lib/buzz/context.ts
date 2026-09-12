@@ -53,22 +53,18 @@ export function agentLevel(agent: MemberRecord | null): Level {
   return LEVELS.includes(level as Level) ? (level as Level) : 'Internal';
 }
 
-// Classification, collection, audience and named-agent grants filter candidates before retrieval.
+// Classification and explicit source-to-agent connections filter candidates before retrieval.
 export async function retrieve(env: BuzzEnv, query: string, level: Level, k = 6, agent: MemberRecord | null = null): Promise<Passage[]> {
-  const ceiling = agent?.data.runtime === 'cloud' ? Math.min(LEVELS.indexOf(level), LEVELS.indexOf('Internal')) : LEVELS.indexOf(level);
-  const allowed = LEVELS.slice(0, ceiling + 1);
+  const allowed = LEVELS.slice(0, LEVELS.indexOf(level) + 1);
   const marks = allowed.map(() => '?').join(',');
   const permissions = [`d.level IN (${marks})`];
   const scope: string[] = [...allowed];
   if (agent) {
-    const collections = Array.isArray(agent.data.context) ? agent.data.context.map(String) : [];
-    // An explicit per-file grant is sufficient collection scope; it never bypasses clearance, runtime or audience checks.
-    permissions.push(collections.length ? `(d.collection IN (${collections.map(() => '?').join(',')}) OR EXISTS(SELECT 1 FROM json_each(d.agents) WHERE value=?))` : `EXISTS(SELECT 1 FROM json_each(d.agents) WHERE value=?)`); scope.push(...collections, agent.id);
-    permissions.push("(json_array_length(d.agents)=0 OR EXISTS(SELECT 1 FROM json_each(d.agents) WHERE value=?))"); scope.push(agent.id);
-    permissions.push("(d.level != 'Restricted' OR EXISTS(SELECT 1 FROM json_each(d.agents) WHERE value=?))"); scope.push(agent.id);
-    const groups = Array.isArray(agent.data.audiences) ? agent.data.audiences.map(String) : [];
-    permissions.push(`(json_array_length(d.audiences)=0 OR EXISTS(SELECT 1 FROM json_each(d.audiences) WHERE value IN (${['Everyone in workspace', ...groups].map(() => '?').join(',')})))`);
-    scope.push('Everyone in workspace', ...groups);
+    // The GitHub Data UI grants access by connecting a named agent to a source.
+    // An empty connection list grants no agent access; clearance still caps every query.
+    permissions.push("EXISTS(SELECT 1 FROM json_each(d.agents) WHERE value=?)");
+    scope.push(agent.id);
+    if (agent.data.runtime === 'cloud') permissions.push("d.level IN ('Public','Internal')");
   }
   const whereScope = permissions.join(' AND ');
   const candidates = new Map<string, Passage>();
@@ -118,8 +114,8 @@ export async function buildPacket(env: BuzzEnv, input: PacketInput): Promise<Pac
   const a = input.agent;
   const scopeRoom = await resolveContextRoom(env, input.room);
   if (!canUseContextRoom(a, scopeRoom)) throw new Error(`${a.name} does not have access to this conversation.`);
-  const instructions = typeof a.data.instructions === 'string' ? a.data.instructions : '';
-  const role = typeof a.data.role === 'string' ? a.data.role : 'assistant';
+  const instructions = String(a.data.instructions ?? '');
+  const role = String(a.data.role ?? 'assistant');
   const system = [
     `You are ${a.name}, ${role} in the Shoal workspace. You run on company hardware.`,
     `Run: ${input.runId}. Mode: ${input.mode}.`,

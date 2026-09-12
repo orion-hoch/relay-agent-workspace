@@ -9,11 +9,11 @@ const characters = ['octopus', 'sea-turtle', 'seahorse', 'seal', 'pufferfish', '
 const tones = ['mint', 'gold', 'lilac', 'coral', 'sky', 'slate'];
 const collectionName = (id: string) => demo.collections.find(collection => collection.id === id)!.name;
 const name = (id: string) => [...demo.members, ...demo.agents].find(member => member.id === id)!.name;
-const sourceText = (source: typeof demo.documents[number]) => `# ${source.title}\n\nFictional Bell Corporation demo evidence · ${source.classification}\nLogical source: ${source.path}\n\n${source.body}\n`;
+const sourceText = (source: typeof demo.documents[number]) => `# ${source.title}\n\nFictional Shell Corporation demo evidence · ${source.classification}\nLogical source: ${source.path}\n\n${source.body}\n`;
 
 /** Add the fictional corpus once; retain existing conversations, custom profiles and files. */
 export async function seedBell(env: BuzzEnv) {
-  await env.DB.prepare("UPDATE documents SET error = 'Keyword search only: Bell demo embeddings have not been generated.' WHERE id LIKE 'bell-%' AND status = 'ready' AND error IS NULL AND EXISTS(SELECT 1 FROM chunks WHERE document_id = documents.id AND embedding IS NULL)").run();
+  await env.DB.prepare("UPDATE documents SET error = 'Keyword search only: Shell demo embeddings have not been generated.' WHERE id LIKE 'bell-%' AND status = 'ready' AND error IS NULL AND EXISTS(SELECT 1 FROM chunks WHERE document_id = documents.id AND embedding IS NULL)").run();
   if (await env.DB.prepare("SELECT 1 FROM settings WHERE key = 'bell_demo_v1'").first()) return;
   const vectors = await embed(env, demo.documents.map(sourceText));
   const statements: D1PreparedStatement[] = [];
@@ -66,7 +66,7 @@ export async function seedBell(env: BuzzEnv) {
     await env.BUCKET.put(key, text, { httpMetadata: { contentType: 'text/markdown; charset=utf-8' } });
     statements.push(
       env.DB.prepare("INSERT OR IGNORE INTO documents(id, name, type, size, collection, level, owner, audiences, agents, status, text_chars, chunk_count, updated_at, r2_key, error) VALUES (?, ?, 'text/markdown', ?, ?, ?, ?, ?, ?, 'ready', ?, 1, ?, ?, ?)")
-        .bind(id, filename, new TextEncoder().encode(text).length, collection.name, source.classification, name(source.ownerId), JSON.stringify(collection.audience), JSON.stringify(agents), text.length, `${source.updatedAt}T12:00:00.000Z`, key, vectors ? null : 'Keyword search only: Bell demo embeddings have not been generated.'),
+        .bind(id, filename, new TextEncoder().encode(text).length, collection.name, source.classification, name(source.ownerId), JSON.stringify(collection.audience), JSON.stringify(agents), text.length, `${source.updatedAt}T12:00:00.000Z`, key, vectors ? null : 'Keyword search only: Shell demo embeddings have not been generated.'),
       env.DB.prepare('INSERT OR IGNORE INTO chunks(id, document_id, idx, text, embedding) VALUES (?, ?, 0, ?, ?)').bind(`${id}:0`, id, text, vectors ? JSON.stringify(vectors[index]) : null),
       env.DB.prepare('INSERT INTO chunks_fts(chunk_id, document_id, text) SELECT ?, ?, ? WHERE NOT EXISTS(SELECT 1 FROM chunks_fts WHERE chunk_id = ?)').bind(`${id}:0`, id, text, `${id}:0`),
     );
@@ -77,7 +77,7 @@ export async function seedBell(env: BuzzEnv) {
     statements.push(env.DB.prepare("INSERT OR IGNORE INTO approvals(id, title, agent, body, action, status, level, recipient, workflow, source, created_at) VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?, 'bell-demo', ?)")
       .bind(`bell-review-${task.id}`, `Demo review · ${task.title}`, agent.name,
         `Synthetic review request. ${task.acceptanceCriteria}\n\nApproving records a demo decision only. No publication, purchase, hardware change, or command is executed.`,
-        JSON.stringify({ type: 'demo_review', taskId: `bell-${task.id}`, effect: 'Record a review decision only' }), agent.classification, name(task.ownerId), 'Bell engineering review', stamp));
+        JSON.stringify({ type: 'demo_review', taskId: `bell-${task.id}`, effect: 'Record a review decision only' }), agent.classification, name(task.ownerId), 'Shell engineering review', stamp));
   }
   statements.push(
     env.DB.prepare("INSERT OR IGNORE INTO settings(key, value) VALUES ('rules', ?)").bind(`${demo.tenant.demoNotice} Cite source evidence. Keep proposed tests separate from observed results. Do not claim an external action occurred without a real receipt.`),

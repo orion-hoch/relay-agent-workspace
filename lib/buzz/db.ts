@@ -1,3 +1,6 @@
+import { nativeChildRun } from './native-child';
+import { cleanDemoProfiles } from './profile-cleanup';
+import { renameShellDemo } from './shell-demo';
 import { BELL_COLLECTIONS, seedBell } from './bell-seed';
 import type { ApprovalRecord, DocumentRecord, EventRecord, MemberRecord, MessageRecord, NodeRecord, RunRecord, TaskRecord, WorkspaceState } from './types';
 
@@ -6,6 +9,7 @@ export type BuzzEnv = {
   BUCKET: R2Bucket;
   BUZZ_VLLM_URL?: string; // e.g. http://127.0.0.1:8000/v1
   BUZZ_VLLM_TOKEN?: string;
+  BUZZ_NODE_NAME?: string;
   BUZZ_MODEL?: string; // served model name, e.g. gemma
   BUZZ_EMBED_URL?: string; // http://127.0.0.1:8001/v1
   BUZZ_EMBED_MODEL?: string;
@@ -47,6 +51,8 @@ export function ensureSchema(env: BuzzEnv): Promise<void> {
   ready ??= (async () => {
     await env.DB.exec(SCHEMA.trim().split('\n').filter(Boolean).join('\n'));
     await seedBell(env);
+    await renameShellDemo(env);
+    await cleanDemoProfiles(env);
   })().catch((error) => { ready = null; throw error; });
   return ready;
 }
@@ -67,7 +73,7 @@ export async function eventsAfter(env: BuzzEnv, after: number, limit = 500): Pro
 
 // Row mappers -------------------------------------------------------------
 type Row = Record<string, unknown>;
-const s = (v: unknown): string | null => (typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint' ? String(v) : null);
+const s = (v: unknown) => (v == null ? null : String(v));
 export const mapMember = (r: Row): MemberRecord => ({ id: String(r.id), kind: r.kind as MemberRecord['kind'], name: String(r.name), initials: String(r.initials), tone: s(r.tone) ?? undefined, data: json(s(r.data), {}) });
 export const mapMessage = (r: Row): MessageRecord => ({ id: String(r.id), room: String(r.room), memberId: String(r.member_id), name: String(r.name), body: String(r.body), createdAt: String(r.created_at), runId: s(r.run_id), state: s(r.state) as MessageRecord['state'], error: s(r.error), attachment: json(s(r.attachment), null) });
 export const mapTask = (r: Row): TaskRecord => ({ id: String(r.id), project: String(r.project), title: String(r.title), description: String(r.description), status: String(r.status), owner: String(r.owner), priority: String(r.priority), due: String(r.due), label: String(r.label), comments: json(s(r.comments), []), deliverable: s(r.deliverable), parentId: s(r.parent_id), criteria: s(r.criteria), createdAt: String(r.created_at) });
@@ -78,7 +84,7 @@ export const mapNode = (r: Row): NodeRecord => ({ id: String(r.id), name: String
 
 export async function loadState(env: BuzzEnv): Promise<WorkspaceState> {
   await ensureSchema(env);
-  const [members, channels, messages, projects, tasks, runs, documents, approvals, nodes, rules, cursor] = await env.DB.batch([
+  const [members, channels, messages, projects, tasks, runs, documents, approvals, nodes, rules, cursor, uiSettings] = await env.DB.batch([
     env.DB.prepare('SELECT * FROM members ORDER BY kind, name'),
     env.DB.prepare('SELECT name FROM channels ORDER BY created_at'),
     env.DB.prepare('SELECT * FROM (SELECT * FROM messages ORDER BY created_at DESC LIMIT 2000) ORDER BY created_at'),
@@ -90,20 +96,31 @@ export async function loadState(env: BuzzEnv): Promise<WorkspaceState> {
     env.DB.prepare('SELECT * FROM nodes ORDER BY name'),
     env.DB.prepare("SELECT value FROM settings WHERE key = 'rules'"),
     env.DB.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events'),
+    env.DB.prepare("SELECT key, value FROM settings WHERE key LIKE 'ui:%'"),
   ]);
   const docs = (documents.results as Row[]).map(mapDocument);
+  const parents = (runs.results as Row[]).map(row => mapRun(row));
+  const observations = await env.DB.prepare("SELECT run_id, payload FROM run_events WHERE type='tool' AND json_extract(payload,'$.name')='native.agent' AND run_id IN (SELECT id FROM runs ORDER BY created_at DESC LIMIT 200) ORDER BY id").all<{ run_id: string; payload: string }>();
+  const nativeRuns = new Map<string, RunRecord>();
+  for (const observation of observations.results) {
+    const parent = parents.find(run => run.id === observation.run_id);
+    if (!parent) continue;
+    const child = nativeChildRun(parent, json<{ output?: unknown }>(observation.payload, {}).output);
+    if (child) nativeRuns.set(child.id, child);
+  }
   return {
+    uiState: Object.fromEntries((uiSettings.results as { key: string; value: string }[]).map(row => [row.key.slice(3), json(row.value, null)])),
     members: (members.results as Row[]).map(mapMember),
     channels: (channels.results as Row[]).map((r) => String(r.name)),
     messages: (messages.results as Row[]).map(mapMessage),
     projects: projects.results as WorkspaceState['projects'],
     tasks: (tasks.results as Row[]).map(mapTask),
-    runs: (runs.results as Row[]).map((r) => mapRun(r)),
+    runs: [...parents, ...nativeRuns.values()],
     documents: docs,
     approvals: (approvals.results as Row[]).map(mapApproval),
     nodes: (nodes.results as Row[]).map(mapNode),
     collections: [...new Set([...BELL_COLLECTIONS, ...docs.map((d) => d.collection)])],
-    rules: s((rules.results[0] as Row | undefined)?.value) ?? '',
+    rules: String((rules.results[0] as Row | undefined)?.value ?? ''),
     cursor: Number((cursor.results[0] as Row).seq),
   };
 }

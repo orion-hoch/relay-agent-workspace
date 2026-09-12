@@ -23,13 +23,13 @@ export async function POST(request: Request) {
   if (p?.retryRunId && !prior) return fail('Original run not found.', 404);
   if (prior && !['failed', 'cancelled', 'completed'].includes(String(prior.status))) return fail('This run is still active.', 409);
   if (prior?.status === 'completed' && p?.mode !== 'deep') return fail('Completed runs can continue with Go deeper.', 409);
-  const taskId = p?.taskId || (typeof prior?.task_id === 'string' ? prior.task_id : null);
+  const taskId = p?.taskId || (prior?.task_id ? String(prior.task_id) : null);
   const agentId = prior ? String(prior.agent_id) : p?.agentId;
   const agent = agentId ? await getAgent(e, agentId) : null;
   const taskRow = taskId ? await e.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(taskId).first<Record<string, unknown>>() : null;
   if (!agent || (!taskRow && !prior)) return fail('Choose a task and an agent.', 404);
-  if (!canUseTaskContext(agent, taskId)) return fail(`${agent.name} is not granted this Bell task's stored context.`, 403);
-  const scopeRoom = typeof prior?.room === 'string' && prior.room ? await resolveContextRoom(e, prior.room).catch(() => null) : null;
+  if (!canUseTaskContext(agent, taskId)) return fail(`${agent.name} is not granted this Shell task's stored context.`, 403);
+  const scopeRoom = prior?.room ? await resolveContextRoom(e, String(prior.room)).catch(() => null) : null;
   if (prior?.room && !scopeRoom) return fail('Original conversation not found.', 404);
   if (!canUseContextRoom(agent, scopeRoom)) return fail(`${agent.name} no longer has access to this conversation.`, 403);
   const active = taskId

@@ -1,9 +1,10 @@
+import { nativeChildRun } from '@/lib/buzz/native-child';
 import { env } from 'cloudflare:workers';
 import { type BuzzEnv, body, ensureSchema, fail, mapRun, now, ok, runnerAuthorized } from '@/lib/buzz/db';
 import { leaseUntil } from '@/lib/buzz/runs';
 export const dynamic = 'force-dynamic';
 type Ev = { type: 'delta' | 'done' | 'failed' | 'tool' | 'heartbeat'; runnerId?: string; attempt?: number; seq?: number; text?: string; result?: string; error?: string; inputTokens?: number; outputTokens?: number; name?: string; input?: unknown; output?: unknown };
-export async function POST(request: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function POST(request: Request, ctx: { params: Promise<{ id: string }> | { id: string } }) {
   const e = env as unknown as BuzzEnv;
   if (!runnerAuthorized(request, e)) return fail('Runner token required.', 401);
   await ensureSchema(e); const { id } = await ctx.params;
@@ -37,10 +38,10 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   } else if (ev.type === 'tool') {
     statements.push(e.DB.prepare(`INSERT INTO run_events(run_id,type,payload,ts) SELECT ?,'tool',?,? WHERE ${guard}`).bind(id, JSON.stringify({ name: ev.name, input: ev.input, output: ev.output }), ts, ...params));
     event('run.tool', { runId: id, name: ev.name });
+    if (ev.name === 'native.agent') { const child = nativeChildRun(run, ev.output); if (child) event('run.updated', { run: child }); }
   } else {
     const completed = ev.type === 'done'; const status = completed ? 'completed' : 'failed';
-    const rawResult = completed ? ev.result ?? '' : ev.result ?? row.result ?? '';
-    const result = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult);
+    const result = completed ? String(ev.result ?? '') : String(ev.result ?? row.result ?? '');
     const error = completed ? null : String(ev.error || 'Execution was interrupted.');
     if (run.messageId) {
       statements.push(e.DB.prepare(`UPDATE messages SET body=CASE WHEN ? THEN ? ELSE body END,state=?,error=? WHERE id=? AND ${guard}`).bind(completed ? 1 : 0, result, completed ? 'complete' : 'error', error, run.messageId, ...params));

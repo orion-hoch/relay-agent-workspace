@@ -1,8 +1,8 @@
+import { buzz } from "@/lib/buzz/store";
 import { AgentThinkingBubble } from "@/components/AgentThinkingBubble";
 import {
   useAgentMembers,
   useWorkspaceMembers,
-  upsertWorkspaceMember,
   removeWorkspaceAgent,
   type AgentMember as Agent,
 } from "@/lib/workspace-members";
@@ -122,38 +122,22 @@ export function AgentsView({ onNotify, renderHomes }: Props) {
       setError("Choose an agent home.");
       return;
     }
-    const previous = agents.find((agent) => agent.id === editingId);
-    const next: Agent = {
+    const next = {
       id: editingId || crypto.randomUUID(),
-      kind: "agent",
-      instructions: instructions.trim(),
       name: name.trim(),
-      role: previous?.role || "",
-      description: instructions.trim(),
-      runtime: home?.kind || previous?.runtime || "local",
-      model: home.kind === "local" ? "Holo-3.1-35B-A3B · NVFP4" : previous?.model || "",
-      device: home?.name || "",
       initials: name.trim().slice(0, 2),
-      color: previous?.color || "slate",
-      owner: previous?.owner || "You",
-      channels: previous?.channels || [],
-      context: previous?.context || [],
-      capabilities: previous?.capabilities || [],
-      goal: previous?.goal || "",
-      audiences: previous?.audiences || [],
-      accessPaths: previous?.accessPaths || [],
-      approvalGates: previous?.approvalGates || [],
-      examplePrompts: previous?.examplePrompts || [],
+      instructions: instructions.trim(),
+      description: instructions.trim(),
+      runtime: home.kind,
+      device: home.name,
       character,
       homeId,
       accessLevel,
       nameCustomized,
-      isNew: previous?.isNew ?? true,
-      paused: previous?.paused,
     };
     setSaving(true);
     try {
-      await upsertWorkspaceMember(next);
+      await buzz.saveAgent(next);
       if (!editingId) setNewlyCreatedId(next.id);
       setAgentAvatarIdentity(next.id, character);
       setDialogOpen(false);

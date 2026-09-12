@@ -20,7 +20,7 @@ export async function POST(request: Request) {
   try {
     const agent = await getAgent(e, run.agentId);
     if (!agent || agent.data.paused) throw new Error('The requested agent is missing or paused.');
-    if (!canUseTaskContext(agent, run.taskId ?? null)) throw new Error(`${agent.name} is not granted this Bell task's stored context.`);
+    if (!canUseTaskContext(agent, run.taskId ?? null)) throw new Error(`${agent.name} is not granted this Shell task's stored context.`);
     let objective = ''; let contract: string | null = null;
     if (run.kind === 'chat') {
       const trigger = run.triggerMessageId ? await e.DB.prepare('SELECT body FROM messages WHERE id = ?').bind(run.triggerMessageId).first<{ body: string }>() : null;

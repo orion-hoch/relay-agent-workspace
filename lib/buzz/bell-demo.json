@@ -1,6 +1,6 @@
 {
   "tenant": {
-    "name": "Bell Corporation",
+    "name": "Shell Corporation",
     "division": "Client & Infrastructure Engineering",
     "tagline": "Build reliable systems. Keep every engineering decision in context.",
     "description": "A fictional computer and server manufacturer developing enterprise notebooks, rack servers, fleet firmware, and efficient power systems.",
@@ -31,7 +31,7 @@
       "id": "bell-public",
       "name": "Public Product Reference",
       "classification": "Public",
-      "path": "Bell / Public / Product Reference",
+      "path": "Shell / Public / Product Reference",
       "audience": [],
       "description": "Fictional published product briefs and design targets cleared for public discussion."
     },
@@ -39,9 +39,9 @@
       "id": "bell-release",
       "name": "Engineering Release Office",
       "classification": "Internal",
-      "path": "Bell / Engineering / Release Office",
+      "path": "Shell / Engineering / Release Office",
       "audience": [
-        "Bell Engineering"
+        "Shell Engineering"
       ],
       "description": "Milestones, qualification summaries, release checklists, and approved internal notes."
     },
@@ -49,7 +49,7 @@
       "id": "bell-platform",
       "name": "Server Platform Design",
       "classification": "Confidential",
-      "path": "Bell / Engineering / Summit R8 / Design",
+      "path": "Shell / Engineering / Summit R8 / Design",
       "audience": [
         "Server Platform",
         "Engineering Leadership"
@@ -60,7 +60,7 @@
       "id": "bell-thermal",
       "name": "Thermal & Power Lab",
       "classification": "Confidential",
-      "path": "Bell / Engineering / Validation / Thermal Lab",
+      "path": "Shell / Engineering / Validation / Thermal Lab",
       "audience": [
         "Thermal Engineering",
         "Product Reliability"
@@ -71,7 +71,7 @@
       "id": "bell-quality",
       "name": "Field Quality Evidence",
       "classification": "Confidential",
-      "path": "Bell / Engineering / Quality / Sanitized Cases",
+      "path": "Shell / Engineering / Quality / Sanitized Cases",
       "audience": [
         "Product Reliability",
         "Platform Software"
@@ -82,7 +82,7 @@
       "id": "bell-firmware",
       "name": "Firmware Engineering",
       "classification": "Confidential",
-      "path": "Bell / Engineering / Compass / Firmware",
+      "path": "Shell / Engineering / Compass / Firmware",
       "audience": [
         "Platform Software",
         "Release Approvers"
@@ -93,7 +93,7 @@
       "id": "bell-fw-vault",
       "name": "Firmware Security Vault",
       "classification": "Restricted",
-      "path": "Bell / Restricted / Firmware Security",
+      "path": "Shell / Restricted / Firmware Security",
       "audience": [
         "Firmware Security"
       ],
@@ -103,7 +103,7 @@
       "id": "bell-bom-vault",
       "name": "BOM & Supplier Vault",
       "classification": "Restricted",
-      "path": "Bell / Restricted / Sourcing / Cedar",
+      "path": "Shell / Restricted / Sourcing / Cedar",
       "audience": [
         "Sourcing Review"
       ],
@@ -124,7 +124,7 @@
         "Release Approvers",
         "Server Platform",
         "Firmware Security",
-        "Bell Engineering"
+        "Shell Engineering"
       ],
       "readCollections": [
         "bell-release",
@@ -136,9 +136,9 @@
         "bell-firmware"
       ],
       "accessPaths": [
-        "Bell / Engineering / Compass / Firmware \u2192 release manifests and rollback plans",
-        "Bell / Restricted / Firmware Security \u2192 finding status and remediation criteria",
-        "Bell / Engineering / Summit R8 / Design \u2192 platform compatibility"
+        "Shell / Engineering / Compass / Firmware \u2192 release manifests and rollback plans",
+        "Shell / Restricted / Firmware Security \u2192 finding status and remediation criteria",
+        "Shell / Engineering / Summit R8 / Design \u2192 platform compatibility"
       ],
       "writeBoundary": "Draft change proposals, risk assessments, and task updates in Firmware Engineering. Cannot alter signed images, keys, production fleets, or security-vault source evidence.",
       "approvalGate": "Olivia approves firmware changes and rollout. Orion must approve any export or downgrade of Restricted findings. These are demonstration policies, not claimed external integrations.",
@@ -162,7 +162,7 @@
       "purpose": "Turn approved engineering updates into a clear release picture across the division.",
       "goal": "Keep each of the four programs' next gate, owner, due date, and blocking dependencies current; prepare the weekly engineering readout from approved Internal sources.",
       "audienceScopes": [
-        "Bell Engineering"
+        "Shell Engineering"
       ],
       "readCollections": [
         "bell-public",
@@ -172,8 +172,8 @@
         "bell-release"
       ],
       "accessPaths": [
-        "Bell / Engineering / Release Office \u2192 milestone board and qualification summaries",
-        "Bell / Public / Product Reference \u2192 approved product descriptions"
+        "Shell / Engineering / Release Office \u2192 milestone board and qualification summaries",
+        "Shell / Public / Product Reference \u2192 approved product descriptions"
       ],
       "writeBoundary": "Draft release notes, meeting briefs, and milestone updates. Cannot read lab raw data, supplier costs, security findings, or change a release approval.",
       "approvalGate": "Olivia approves release status; Orion approves division-wide or external publication. If a source is inaccessible, request an approved summary from its owner.",
@@ -200,7 +200,7 @@
         "Product Reliability",
         "Server Platform",
         "Thermal Engineering",
-        "Bell Engineering"
+        "Shell Engineering"
       ],
       "readCollections": [
         "bell-public",
@@ -212,8 +212,8 @@
         "bell-thermal"
       ],
       "accessPaths": [
-        "Bell / Engineering / Validation / Thermal Lab \u2192 chamber datasets and comparison reports",
-        "Bell / Engineering / Summit R8 / Design \u2192 power and airflow budgets"
+        "Shell / Engineering / Validation / Thermal Lab \u2192 chamber datasets and comparison reports",
+        "Shell / Engineering / Summit R8 / Design \u2192 power and airflow budgets"
       ],
       "writeBoundary": "Draft analysis, proposed lab runs, and thermal recommendations. Cannot mark an unperformed test as complete, change physical lab equipment, or apply a fan curve to hardware.",
       "approvalGate": "Marcus approves the test plan and any qualification waiver; Olivia approves fan-curve firmware changes.",
@@ -239,7 +239,7 @@
       "audienceScopes": [
         "Product Reliability",
         "Platform Software",
-        "Bell Engineering"
+        "Shell Engineering"
       ],
       "readCollections": [
         "bell-public",
@@ -251,9 +251,9 @@
         "bell-quality"
       ],
       "accessPaths": [
-        "Bell / Engineering / Quality / Sanitized Cases \u2192 failure signatures and cohort evidence",
-        "Bell / Engineering / Compass / Firmware \u2192 compatibility and recovery notes",
-        "Bell / Engineering / Release Office \u2192 approved qualification summaries"
+        "Shell / Engineering / Quality / Sanitized Cases \u2192 failure signatures and cohort evidence",
+        "Shell / Engineering / Compass / Firmware \u2192 compatibility and recovery notes",
+        "Shell / Engineering / Release Office \u2192 approved qualification summaries"
       ],
       "writeBoundary": "Draft incident clusters, reproduction steps, and support summaries. Cannot contact customers, close support cases, export case evidence, or claim a causal link without validation.",
       "approvalGate": "Marcus approves root-cause conclusions and incident closure; Olivia approves mitigation language tied to a firmware release.",
@@ -284,7 +284,7 @@
       ],
       "writeCollections": [],
       "accessPaths": [
-        "Bell / Public / Product Reference \u2192 fictional public product briefs only"
+        "Shell / Public / Product Reference \u2192 fictional public product briefs only"
       ],
       "writeBoundary": "Read-only context. May draft a response in the current conversation; cannot modify source material or infer unpublished specs from inaccessible collections.",
       "approvalGate": "Orion reviews any new public product claim. No live web crawling or connected research service is implied by this demo.",
@@ -312,7 +312,7 @@
         "Sourcing Review",
         "Server Platform",
         "Thermal Engineering",
-        "Bell Engineering"
+        "Shell Engineering"
       ],
       "readCollections": [
         "bell-public",
@@ -325,9 +325,9 @@
         "bell-bom-vault"
       ],
       "accessPaths": [
-        "Bell / Restricted / Sourcing / Cedar \u2192 supplier quotes and allocation model",
-        "Bell / Engineering / Validation / Thermal Lab \u2192 PSU qualification evidence",
-        "Bell / Engineering / Summit R8 / Design \u2192 required PSU configuration"
+        "Shell / Restricted / Sourcing / Cedar \u2192 supplier quotes and allocation model",
+        "Shell / Engineering / Validation / Thermal Lab \u2192 PSU qualification evidence",
+        "Shell / Engineering / Summit R8 / Design \u2192 required PSU configuration"
       ],
       "writeBoundary": "Draft allocation scenarios and sourcing decision notes. Cannot issue purchase orders, change vendor commitments, approve spend, or publish pricing to engineering channels.",
       "approvalGate": "Orion approves sourcing and spend. Marcus must approve PSU qualification before any alternate is recommended as production-ready.",
@@ -431,7 +431,7 @@
       "ownerId": "you",
       "updatedAt": "2026-09-10",
       "path": "public/product-reference/summit-r8-brief.md",
-      "body": "Synthetic public reference. Summit R8 is Bell's planned 2U rack platform for enterprise virtualization, private AI inference, and branch consolidation. Public design targets: up to 32 DDR5 DIMM slots, up to 12 front-accessible drive bays, redundant hot-swap power, and tool-free service access. Supported configurations and availability remain subject to qualification. This brief does not state processor SKUs, benchmark results, launch dates, supplier identities, or prices. Public questions should distinguish a design target from a qualified shipping specification."
+      "body": "Synthetic public reference. Summit R8 is Shell's planned 2U rack platform for enterprise virtualization, private AI inference, and branch consolidation. Public design targets: up to 32 DDR5 DIMM slots, up to 12 front-accessible drive bays, redundant hot-swap power, and tool-free service access. Supported configurations and availability remain subject to qualification. This brief does not state processor SKUs, benchmark results, launch dates, supplier identities, or prices. Public questions should distinguish a design target from a qualified shipping specification."
     },
     {
       "id": "doc-summit-design",
@@ -475,7 +475,7 @@
       "ownerId": "marcus",
       "updatedAt": "2026-09-12",
       "path": "engineering/quality/sanitized-cases/h14-q18.md",
-      "body": "Synthetic sanitized field cohort; no actual customers. During a 14-day evaluation, 18 of 600 Horizon 14 devices showed a black external display after docked resume: 3.0% device incidence. All 18 affected devices used Bell Dock D2 firmware 2.6 and two external 4K displays. The total number of devices with that exact configuration is not yet known, so do not report a configuration-specific failure rate. Lab reproduction: 7 failures in 100 sleep/resume cycles with dock 2.6; 0 in 100 with candidate dock 2.7 using the same two-display setup. Disconnect/reconnect restores output. Current hypothesis: link-training timing during resume; root cause is not confirmed. Next evidence: 1,000 cycles across 10 devices, including cold boot and repeated hot-plug. Incident closure requires Marcus's review; 0/100 does not establish zero risk."
+      "body": "Synthetic sanitized field cohort; no actual customers. During a 14-day evaluation, 18 of 600 Horizon 14 devices showed a black external display after docked resume: 3.0% device incidence. All 18 affected devices used Shell Dock D2 firmware 2.6 and two external 4K displays. The total number of devices with that exact configuration is not yet known, so do not report a configuration-specific failure rate. Lab reproduction: 7 failures in 100 sleep/resume cycles with dock 2.6; 0 in 100 with candidate dock 2.7 using the same two-display setup. Disconnect/reconnect restores output. Current hypothesis: link-training timing during resume; root cause is not confirmed. Next evidence: 1,000 cycles across 10 devices, including cold boot and repeated hot-plug. Incident closure requires Marcus's review; 0/100 does not establish zero risk."
     },
     {
       "id": "doc-horizon-qual",

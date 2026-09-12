@@ -1,5 +1,5 @@
 import "./compute-setup.css";
-import { ComputeHomesView } from "./ComputeHomesView";
+import { ComputeHomesView, type ComputeHomeMetrics } from "./ComputeHomesView";
 import { AgentsView } from "./AgentsView";
 import { useEffect, useRef, useState } from "react";
 import { Check, Download } from "lucide-react";
@@ -15,6 +15,7 @@ type SetupStatus = {
   downloaded?: number;
   total?: number;
   logs?: string[];
+  metrics?: ComputeHomeMetrics | null;
 };
 const labels: Record<Phase, string> = {
   not_installed: "Not installed",
@@ -25,6 +26,19 @@ const labels: Record<Phase, string> = {
   error: "Setup failed",
 };
 const activePhases: Phase[] = ["downloading", "installing", "starting"];
+function readMetrics(value: unknown): ComputeHomeMetrics | null {
+  if (!value || typeof value !== "object") return null;
+  const data = value as Record<string, unknown>;
+  if (typeof data.measuredAt !== "string" || !Number.isFinite(Date.parse(data.measuredAt))
+    || Date.now() - Date.parse(data.measuredAt) > 30000
+    || typeof data.ramUsedBytes !== "number" || !Number.isFinite(data.ramUsedBytes) || data.ramUsedBytes < 0
+    || typeof data.ramTotalBytes !== "number" || !Number.isFinite(data.ramTotalBytes) || data.ramTotalBytes <= 0) return null;
+  const percent = (item: unknown) => typeof item === "number" && Number.isFinite(item) && item >= 0 && item <= 100 ? item : null;
+  return {
+    cpuPercent: percent(data.cpuPercent), gpuPercent: percent(data.gpuPercent),
+    ramUsedBytes: data.ramUsedBytes, ramTotalBytes: data.ramTotalBytes, measuredAt: data.measuredAt,
+  };
+}
 function readStatus(value: unknown): SetupStatus {
   if (!value || typeof value !== "object") throw new Error("Setup status unavailable.");
   const data = value as Record<string, unknown>;
@@ -39,6 +53,7 @@ function readStatus(value: unknown): SetupStatus {
   return {
     phase: data.phase as Phase,
     model: data.model,
+    metrics: readMetrics(data.metrics),
     progress: finite(data.progress) ? Math.min(100, data.progress) : undefined,
     message: typeof data.message === "string" ? data.message : undefined,
     error: typeof data.error === "string" ? data.error : undefined,
@@ -96,7 +111,7 @@ export function ComputeView({ onNotify }: { onNotify?: (message: string) => void
         if (stopped || revision.current !== currentRevision) return;
         setStatus(next);
         setConnectionError("");
-        if (next.phase === "ready") delay = 10000;
+        if (next.phase === "ready") delay = 5000;
       } catch (error) {
         if (!stopped && !controller.signal.aborted && revision.current === currentRevision)
           setConnectionError(
@@ -162,7 +177,7 @@ export function ComputeView({ onNotify }: { onNotify?: (message: string) => void
           : "Download and set up";
   return <AgentsView onNotify={onNotify} renderHomes={(groups) => <ComputeHomesView
     {...groups}
-    metrics={null}
+    metrics={connectionError ? null : readMetrics(status?.metrics)}
     localStatus={<output aria-live="polite">{ready && <Check size={14} />} {phaseLabel}</output>}
     cloudStatus="Not connected"
     localActions={!ready ? <button className="btn btn-primary" disabled={submitting || active} onClick={() => void setup()}><Download size={16} /> {buttonText}</button> : undefined}

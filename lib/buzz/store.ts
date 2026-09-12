@@ -5,7 +5,7 @@ import { useSyncExternalStore } from 'react';
 import type { ApprovalRecord, DocumentRecord, EventRecord, MemberRecord, MessageRecord, NodeRecord, RunMode, RunRecord, TaskRecord, WorkspaceState } from './types';
 
 export type BuzzStore = WorkspaceState & { loaded: boolean; online: boolean };
-const empty: BuzzStore = { members: [], channels: [], messages: [], projects: [], tasks: [], runs: [], documents: [], approvals: [], nodes: [], collections: [], rules: '', cursor: 0, loaded: false, online: true };
+const empty: BuzzStore = { uiState: {}, members: [], channels: [], messages: [], projects: [], tasks: [], runs: [], documents: [], approvals: [], nodes: [], collections: [], rules: '', cursor: 0, loaded: false, online: true };
 let state: BuzzStore = empty;
 const listeners = new Set<() => void>();
 function set(next: BuzzStore) { state = next; listeners.forEach((l) => l()); }
@@ -16,6 +16,8 @@ export function apply(events: EventRecord[]) {
   for (const ev of events) {
     const p = ev.payload as Record<string, unknown>;
     switch (ev.type) {
+      case 'channel.created': s = { ...s, channels: s.channels.includes(p.name as string) ? s.channels : [...s.channels, p.name as string] }; break;
+      case 'workspace.updated': { const key = p.key as string; if (workspaceWrites.has(key) || ev.seq <= (workspaceRevisions.get(key) ?? -1)) break; s = { ...s, uiState: { ...s.uiState, [key]: p.value } }; break; }
       case 'message.created': case 'message.updated': {
         const m = p.message as MessageRecord;
         s = { ...s, messages: upsert(s.messages, m), channels: m.room.startsWith('dm:') || m.room.startsWith('thread:') || s.channels.includes(m.room) ? s.channels : [...s.channels, m.room] };
@@ -42,7 +44,7 @@ export function apply(events: EventRecord[]) {
       case 'document.created': case 'document.updated': { const d = p.document as DocumentRecord; s = { ...s, documents: upsert(s.documents, d), collections: s.collections.includes(d.collection) ? s.collections : [...s.collections, d.collection] }; break; }
       case 'document.deleted': s = { ...s, documents: s.documents.filter((d) => d.id !== (p.id as string)) }; break;
       case 'approval.created': case 'approval.updated': s = { ...s, approvals: upsert(s.approvals, p.approval as ApprovalRecord) }; break;
-      case 'member.deleted': s = { ...s, members: s.members.filter((m) => m.id !== p.id) }; break;
+      case 'member.deleted': s = { ...s, members: s.members.filter(member => member.id !== p.id) }; break;
       case 'member.updated': s = { ...s, members: upsert(s.members, p.member as MemberRecord) }; break;
       case 'node.updated': s = { ...s, nodes: upsert(s.nodes, p.node as NodeRecord) }; break;
     }
@@ -79,14 +81,31 @@ export function refresh() { return load(); }
 
 // Mutations: every write goes to the API; the event stream brings the durable record back.
 async function call<T>(path: string, init: RequestInit): Promise<T> {
-  const headers = new Headers(init.headers);
-  if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-  const res = await fetch(path, { ...init, headers });
+  const res = await fetch(path, { ...init, headers: { 'Content-Type': 'application/json', ...init.headers } });
   const data = (await res.json().catch(() => null)) as (T & { error?: string }) | null;
   if (!res.ok) throw new Error(data?.error || `Request failed (${res.status}).`);
   return data as T;
 }
+const workspaceWrites = new Map<string, Promise<void>>();
+const workspaceRevisions = new Map<string, number>();
+function saveWorkspaceSetting(key: string, value: unknown): Promise<void> {
+  if (!state.loaded) return Promise.reject(new Error('Workspace is still loading. Please try again.'));
+  const previous = state.uiState[key];
+  set({ ...state, uiState: { ...state.uiState, [key]: value } });
+  const write = (workspaceWrites.get(key) ?? Promise.resolve()).catch(() => {}).then(async () => {
+    const result = await call<{ seq: number }>('/api/workspace', { method: 'PUT', body: JSON.stringify({ key, value }) });
+    workspaceRevisions.set(key, result.seq);
+  }).catch(error => {
+    if (state.uiState[key] === value) set({ ...state, uiState: { ...state.uiState, [key]: previous } });
+    throw error;
+  });
+  workspaceWrites.set(key, write);
+  void write.finally(() => { if (workspaceWrites.get(key) === write) workspaceWrites.delete(key); }).catch(() => {});
+  return write;
+}
 export const buzz = {
+  createChannel: (name: string) => call<{ name: string }>('/api/channels', { method: 'POST', body: JSON.stringify({ name }) }).then(r => { apply([{ seq: state.cursor, ts: '', type: 'channel.created', payload: r }]); return r; }),
+  saveWorkspaceSetting,
   sendMessage: (room: string, text: string, clientId: string, mode: RunMode = 'quick', memberId = 'you') => call<{ message: MessageRecord; runs: string[] }>('/api/messages', { method: 'POST', body: JSON.stringify({ room, text, clientId, memberId, mode }) }).then((r) => { apply([{ seq: state.cursor, ts: r.message.createdAt, type: 'message.created', payload: { message: r.message } }]); return r; }),
   createTask: (task: Partial<TaskRecord>) => call<{ task: TaskRecord }>('/api/tasks', { method: 'POST', body: JSON.stringify(task) }).then((r) => { apply([{ seq: state.cursor, ts: '', type: 'task.created', payload: { task: r.task } }]); return r.task; }),
   updateTask: (id: string, patch: Partial<TaskRecord> & { comment?: string }) => call<{ task: TaskRecord }>(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }).then((r) => { apply([{ seq: state.cursor, ts: '', type: 'task.updated', payload: { task: r.task } }]); return r.task; }),
@@ -94,8 +113,8 @@ export const buzz = {
   retryRun: (retryRunId: string, mode?: RunMode) => call<{ run: RunRecord }>('/api/runs', { method: 'POST', body: JSON.stringify({ retryRunId, mode }) }),
   inspectRun: (id: string) => call<{ run: RunRecord; events: { id: number; type: string; payload: Record<string, unknown>; ts: string }[] }>(`/api/runs?id=${encodeURIComponent(id)}`, { method: 'GET' }),
   decide: (id: string, decision: 'Approved' | 'Rejected', action?: string) => call<{ approval: ApprovalRecord }>(`/api/approvals/${id}`, { method: 'POST', body: JSON.stringify({ decision, action }) }).then((r) => { apply([{ seq: state.cursor, ts: '', type: 'approval.updated', payload: { approval: r.approval } }]); return r.approval; }),
-  deleteAgent: (id: string) => call<{ ok: true }>(`/api/agents?id=${encodeURIComponent(id)}`, { method: 'DELETE' }).then(() => apply([{ seq: state.cursor, ts: '', type: 'member.deleted', payload: { id } }])),
   saveAgent: (agent: Record<string, unknown>) => call<{ member: MemberRecord }>('/api/agents', { method: 'POST', body: JSON.stringify(agent) }).then((r) => { apply([{ seq: state.cursor, ts: '', type: 'member.updated', payload: { member: r.member } }]); return r.member; }),
+  deleteAgent: (id: string) => call<{ ok: true }>(`/api/agents?id=${encodeURIComponent(id)}`, { method: 'DELETE' }).then(() => apply([{ seq: state.cursor, ts: '', type: 'member.deleted', payload: { id } }])),
   retrieve: (query: string, agentId?: string, k = 6) => call<{ passages: import('./types').Passage[] }>('/api/context', { method: 'POST', body: JSON.stringify({ query, agentId, k }) }),
   importDocument: async (file: File, meta: { collection: string; level: string; owner?: string; audiences?: string[]; agents?: string[] }) => {
     const form = new FormData();

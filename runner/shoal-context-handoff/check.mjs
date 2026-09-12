@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import { registerHandoff } from './index.js';
+const hooks = {};
+registerHandoff({ on: (name, hook) => { hooks[name] = hook; } });
+const ctx = { sessionKey: 'agent:main:shoal:run-a', runId: 'native-run-a' };
+const prompt = 'Objective: answer in one sentence. Evidence: reference CEDAR-728413.';
+hooks.before_prompt_build({ prompt, messages: [] }, ctx);
+const event = { toolName: 'sessions_spawn', params: { agentId: 'support', task: 'Answer the question.' } };
+const result = hooks.before_tool_call(event, ctx);
+assert(result.params.task.includes(prompt));
+assert.equal(result.params.agentId, 'support');
+assert.equal(hooks.before_tool_call(event, { ...ctx, runId: 'other-run' }).block, true);
+assert.equal(hooks.before_tool_call(event, { sessionKey: 'agent:main:other', runId: ctx.runId }), undefined);
+hooks.before_prompt_build({ prompt: 'x'.repeat(16001), messages: [] }, ctx);
+assert.equal(hooks.before_tool_call(event, ctx).block, true);
+console.log('Exact scoped packet retained; other runs isolated; oversized handoffs blocked.');

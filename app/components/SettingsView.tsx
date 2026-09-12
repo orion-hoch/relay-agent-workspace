@@ -35,15 +35,20 @@ export function SettingsView({ navigate, preferences, setPreferences }: Props) {
   const [draftName, setDraftName] = useState<string | null>(null);
   const nameValue = draftName ?? workspaceName;
   const [message, setMessage] = useState('');
-  function saveName() {
+  async function saveName() {
     const next = nameValue.trim();
     if (!next) {
       setMessage('Enter a workspace name.');
       return;
     }
-    setWorkspaceName(next);
-    setDraftName(next);
-    setMessage('Saved');
+    setMessage('Saving…');
+    try {
+      await setWorkspaceName(next);
+      setDraftName(null);
+      setMessage('Saved');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not save workspace name.');
+    }
   }
   return (
     <div className="page quality-settings">

@@ -1,4 +1,4 @@
-// Fictional Bell program briefs. Task completion is calculated from the shared store.
+// Fictional Shell program briefs. Task completion is calculated from the shared store.
 export const bellProjects = [
   {
     "id": "summit-r8",
