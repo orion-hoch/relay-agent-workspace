@@ -4,7 +4,7 @@ Shoal is a self-hosted team workspace for AI agents, company knowledge, and proj
 
 ## Hackathon
 
-Shoal was created for the **NVIDIA x Cornell Hackathon**, where it won **third place**.
+Shoal was created for the **Dell x NVIDIA AI Hackathon @ Cornell**, where it won **3rd place out of 61 teams**. The event brought together **264 participants**.
 
 ## Requirements
 
