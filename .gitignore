@@ -1,43 +1,22 @@
-# dependencies
-/node_modules
-/.pnp
-.pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
-
-# testing
-/coverage
-
-# next.js
+# Installed dependencies and generated builds
+/node_modules/
 /.next/
-/.vinext/
 /out/
-
-# misc
-.DS_Store
-*.pem
-
-# debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-
-# local environment
-.env*
-
-# deployment and generated files
-.vercel
-next-env.d.ts
 /dist/
-/.wrangler/
-/outputs/
-/work/
-
+next-env.d.ts
 *.tsbuildinfo
 
-# Local runtime secrets
-.dev.vars*
+# Private configuration and workspace data
+.env*
+!.env.example
+/.shoal/
+*.pem
+/shoal-ca.crt
+
+# Local output and system files
+/outputs/
+/work/
+__pycache__/
+*.pyc
+.DS_Store
+npm-debug.log*

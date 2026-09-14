@@ -1,0 +1,8 @@
+'use client';
+import {useState} from 'react';
+import {call,refresh,useBuzz} from '@/lib/buzz/store';
+import {Dialog,DialogContent,DialogHeader,DialogTitle,DialogDescription,DialogFooter} from '@/components/ui/dialog';
+export function RenameChannel({room,onClose}: {room:string;onClose:()=>void}){
+  const {channelDetails=[]}=useBuzz();const [name,setName]=useState(channelDetails.find(channel=>channel.name===room)?.displayName||room),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+  return <Dialog open onOpenChange={open=>{if(!open&&!busy)onClose();}}><DialogContent className="channel-dialog"><DialogHeader><DialogTitle>Rename channel</DialogTitle><DialogDescription className="sr-only">Channel history and files are preserved.</DialogDescription></DialogHeader><form className="channel-form" onSubmit={async event=>{event.preventDefault();setBusy(true);setError('');try{await call('/api/channels',{method:'PATCH',body:JSON.stringify({action:'rename',name:room,newName:name.trim().toLowerCase().replace(/\s+/g,'-')})});await refresh();onClose();}catch(error){setError(error instanceof Error?error.message:'Could not rename channel.');}finally{setBusy(false);}}}><label>Channel name<input className="input" aria-label="New channel name" required maxLength={60} value={name} disabled={busy} onChange={event=>setName(event.target.value)}/></label>{error&&<p role="alert" className="connection-error">{error}</p>}<DialogFooter><button className="btn btn-secondary" type="button" disabled={busy} onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={busy||!name.trim()}>Save name</button></DialogFooter></form></DialogContent></Dialog>;
+}

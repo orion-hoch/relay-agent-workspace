@@ -8,7 +8,7 @@ export type ComputeHomeMetrics = {
   measuredAt: string;
 };
 export const TELEMETRY_KEY = 'telemetry:lab';
-export const TELEMETRY_MAX_AGE_MS = 30000;
+const TELEMETRY_MAX_AGE_MS = 30000;
 export function validMetrics(value: unknown): value is ComputeHomeMetrics {
   if (!value || typeof value !== 'object') return false;
   const m = value as Record<string, unknown>;

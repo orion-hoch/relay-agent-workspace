@@ -2,17 +2,10 @@
 @import 'tw-animate-css';
 @import 'shadcn/tailwind.css';
 @import './relay.css';
-@import './components/work.css';
-@import './components/data.css';
-@import './components/agents.css';
-@import './monochrome.css';
 @import './chat.css';
-@import './qa-fixes.css';
-@import './components/agents-buzz.css';
-@import './components/agent-menu.css';
-@import './components/member-cards.css';
-@import './components/quality-modules.css';
-@import './components/settings-inbox.css';
+@import './agents.css';
+@import './data.css';
+@import './settings.css';
 
 @custom-variant dark (&:is(.dark *));
 
@@ -79,3 +72,15 @@ body {
     @apply font-sans;
   }
 }
+
+/* Workspace visual rule: filled surfaces and readable labels, never dotted status or hairline dividers. */
+:root,.dark{--border:transparent;--input:transparent;--sidebar-border:transparent}
+.input,.textarea,.select,.team-form select{background:#eef1ee;border:0;box-shadow:none}
+.btn-secondary{background:#eaf0ec;border:0;box-shadow:none;color:#344c3d}.btn-secondary:hover{background:#dce7df}
+.btn-primary{background:#294b39;color:#fff}
+.composer{background:#f0f3f0;border:0}.composer:focus-within{background:#e7ece8;box-shadow:none}.composer textarea:focus-visible{outline:none}
+.channel-tabs [data-active],.channel-tabs [data-state=active]{background:#e2ebe4 !important;border:0 !important;border-radius:10px !important;padding:8px 12px !important}
+.conversation-detail-pane{box-shadow:-12px 0 30px #25382c0d}.detail-pane-resizer{width:16px;left:-8px}.detail-pane-resizer:hover,.detail-pane-resizer:focus-visible{background:#dce7df}
+[data-slot=dialog-content]{border:0}.settings-group,.team-notice,.team-card{background:#f0f3f0}.settings-preference-row+.settings-preference-row{margin-top:8px}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible,a:focus-visible{outline:3px solid #689074;outline-offset:3px}
+button:disabled{opacity:.5;cursor:default}.lucide{stroke-width:2.5}

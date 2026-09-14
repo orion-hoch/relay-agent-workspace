@@ -1,9 +1,8 @@
 "use client";
 // Workspace directory, read from the shared Buzz store. Agent fields live in MemberRecord.data.
-import { useEffect, useMemo } from "react";
+import { useMemo } from "react";
 import { buzz, useBuzz } from "@/lib/buzz/store";
-import type { MemberRecord } from "@/lib/buzz/types";
-export type AccessLevel = "Public" | "Internal" | "Confidential" | "Restricted";
+import { type MemberRecord } from "@/lib/buzz/types";
 import { normalizeAgentCharacter, type AgentCharacter } from './agent-characters';
 export type { AgentCharacter } from './agent-characters';
 type MemberBase = { id: string; name: string; initials: string; tone?: string };
@@ -12,12 +11,14 @@ export type AgentMember = MemberBase & {
   kind: "agent";
   homeId: string;
   character: AgentCharacter;
+  avatar?: string;
   instructions: string;
-  accessLevel: AccessLevel;
+  accessLevel: string;
   runtime: "local" | "cloud";
   role: string;
   description: string;
   model: string;
+  modelConnection?: string;
   device: string;
   color: string;
   owner: string;
@@ -32,9 +33,9 @@ export type AgentMember = MemberBase & {
   nameCustomized?: boolean;
   isNew?: boolean;
   paused?: boolean;
+  networkAccess?: boolean;
 };
 export type WorkspaceMember = HumanMember | AgentMember;
-const levels: AccessLevel[] = ["Public", "Internal", "Confidential", "Restricted"];
 function text(value: unknown, fallback = "", max = 20000): string {
   return typeof value === "string" ? value.slice(0, max) : fallback;
 }
@@ -67,14 +68,12 @@ function normalize(value: unknown): WorkspaceMember | null {
     runtime,
     homeId: ['studio', 'lab'].includes(String(v.homeId)) ? 'lab' : ['cloud-preview', 'openai-preview'].includes(String(v.homeId)) ? 'openai-preview' : text(v.homeId, '', 100),
     character: normalizeAgentCharacter(v.character),
-    accessLevel: levels.includes(v.accessLevel as AccessLevel)
-      ? (v.accessLevel as AccessLevel)
-      : runtime === "cloud"
-        ? "Public"
-        : "Confidential",
+    avatar: text(v.avatar, "", 100000),
+    accessLevel: text(v.accessLevel, runtime === 'cloud' ? 'Public' : 'Confidential',48),
     instructions,
     description: text(v.description, instructions),
     role: text(v.role, "", 200),
+    modelConnection: text(v.modelConnection),
     model: text(v.model, "", 200),
     device: text(v.device, "", 200),
     color: text(v.color, "slate", 30),
@@ -90,16 +89,12 @@ function normalize(value: unknown): WorkspaceMember | null {
     nameCustomized: v.nameCustomized === true,
     isNew: v.isNew === true,
     paused: v.paused === true,
+    networkAccess: v.networkAccess === true,
   };
 }
 function fromRecord(record: MemberRecord): WorkspaceMember | null {
   const { data, ...rest } = record;
   return normalize({ ...data, ...rest });
-}
-// ponytail: last rendered snapshot; the store has no non-hook getter and no consumer needs one yet.
-let latest: readonly WorkspaceMember[] = [];
-export function getWorkspaceMembers(): readonly WorkspaceMember[] {
-  return latest;
 }
 export function useWorkspaceMembers(): readonly WorkspaceMember[] {
   const { members } = useBuzz();
@@ -107,7 +102,6 @@ export function useWorkspaceMembers(): readonly WorkspaceMember[] {
     () => members.slice().sort((a, b) => Number(b.data.createdAt || 0) - Number(a.data.createdAt || 0)).map(fromRecord).filter((member): member is WorkspaceMember => !!member),
     [members],
   );
-  useEffect(() => { latest = snapshot; }, [snapshot]);
   return snapshot;
 }
 export function useAgentMembers(): readonly AgentMember[] {

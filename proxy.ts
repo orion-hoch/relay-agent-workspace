@@ -1,129 +1,101 @@
-import { NextResponse, type NextRequest } from "next/server";
+import { NextResponse, type NextRequest } from 'next/server';
+import { isAdmin, runnerDevice, runnerPath, sessionUser } from './lib/server/team';
 
-function unavailable(message: string, status = 503) {
-  return Response.json({ error: message }, { status, headers: { "Cache-Control": "no-store" } });
-}
-
-/** Next-only API boundary. The Vinext app keeps its native D1/R2 routes. */
 export async function proxy(request: NextRequest): Promise<Response> {
-  if (process.env.SHOAL_NATIVE_BACKEND === "1") return NextResponse.next();
-  const caller = new URL(request.url);
-  const origin = request.headers.get("origin");
-  if (origin && origin !== caller.origin)
-    return unavailable("Open this request from your Shoal workspace.", 403);
-  if (request.headers.get("sec-fetch-site") === "cross-site")
-    return unavailable("Cross-site API requests are not allowed.", 403);
-
-  const configured = process.env.SHOAL_BACKEND_URL?.trim();
-  if (!configured) return unavailable("The shared backend is not connected yet.");
-  let backend: URL;
+  const path = request.nextUrl.pathname;
+  const headers = new Headers(request.headers);
+  for (const name of ['x-shoal-user', 'x-shoal-role', 'x-shoal-device'])
+    headers.delete(name);
+  const origin = request.headers.get('origin');
   try {
-    backend = new URL(configured);
-    const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(backend.hostname);
+    // Cross-site protection applies to state-changing requests only; top-level
+    // navigations such as invitation links legitimately arrive cross-site.
     if (
-      (backend.protocol !== "https:" && !(backend.protocol === "http:" && loopback)) ||
-      backend.username ||
-      backend.password ||
-      backend.search ||
-      backend.hash ||
-      backend.pathname !== "/"
+      !['GET', 'HEAD'].includes(request.method) &&
+      ((origin && new URL(origin).host !== request.headers.get('host')) ||
+        request.headers.get('sec-fetch-site') === 'cross-site')
     )
-      throw new Error("Invalid backend origin");
-    if (backend.origin === caller.origin) throw new Error("Proxy loop");
-  } catch {
-    return unavailable("The shared backend address is not configured correctly.");
-  }
-
-  // Assign the pathname rather than resolving user input as a URL: //host paths
-  // must never replace the configured target host.
-  backend.pathname = caller.pathname;
-  backend.search = caller.search;
-  const headers = new Headers();
-  for (const name of [
-    "accept",
-    "content-type",
-    "if-match",
-    "if-none-match",
-    "if-modified-since",
-    "if-unmodified-since",
-    "range",
-    "if-range",
-    "idempotency-key",
-  ]) {
-    const value = request.headers.get(name);
-    if (value) headers.set(name, value);
-  }
-  headers.set("origin", backend.origin);
-  const token = process.env.SHOAL_BACKEND_TOKEN?.trim();
-  const authorization = token ? `Bearer ${token}` : request.headers.get("authorization");
-  if (authorization) headers.set("authorization", authorization);
-  // No browser cookies, Host, forwarding headers, or hop-by-hop request headers.
-  try {
-    const init: RequestInit & { duplex?: "half" } = {
-      method: request.method,
-      headers,
-      redirect: "manual",
-      cache: "no-store",
-      signal: AbortSignal.any([request.signal, AbortSignal.timeout(90000)]),
-    };
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      init.body = request.body;
-      init.duplex = "half";
-    }
-    const upstream = await fetch(backend, init);
-    const responseHeaders = new Headers(upstream.headers);
-    const connectionHeaders =
-      responseHeaders
-        .get("connection")
-        ?.split(",")
-        .map((value) => value.trim())
-        .filter(Boolean) ?? [];
-    for (const name of [
-      ...connectionHeaders,
-      "connection",
-      "keep-alive",
-      "proxy-authenticate",
-      "proxy-authorization",
-      "te",
-      "trailer",
-      "transfer-encoding",
-      "upgrade",
-      "set-cookie",
-      "content-encoding",
-      "content-length",
-      "access-control-allow-origin",
-      "access-control-allow-credentials",
-    ])
-      responseHeaders.delete(name);
-    responseHeaders.set("cache-control", "no-store");
-    responseHeaders.set("x-content-type-options", "nosniff");
-    const location = responseHeaders.get("location");
-    if (location) {
-      const destination = new URL(location, backend);
-      // Do not send the browser to a protected backend or follow redirects with
-      // its credential. Same-backend redirects stay behind this proxy.
-      if (destination.origin !== backend.origin || !destination.pathname.startsWith("/api/")) {
-        await upstream.body?.cancel();
-        return unavailable("The backend returned an unsupported redirect.", 502);
-      }
-      responseHeaders.set(
-        "location",
-        `${caller.origin}${destination.pathname}${destination.search}${destination.hash}`,
+      return Response.json(
+        { error: 'Open this request from your workspace.' },
+        { status: 403 },
       );
-    }
-    return new Response(request.method === "HEAD" ? null : upstream.body, {
-      status: upstream.status,
-      statusText: upstream.statusText,
-      headers: responseHeaders,
-    });
   } catch {
-    return unavailable(
-      request.signal.aborted
-        ? "Request cancelled."
-        : "The shared backend could not be reached. Try again.",
-      request.signal.aborted ? 499 : 502,
-    );
+    return Response.json({ error: 'Invalid origin.' }, { status: 403 });
   }
+  if (['/login', '/join', '/api/auth', '/api/lan/certificate', '/api/integrations/google/callback'].includes(path))
+    return NextResponse.next({ request: { headers } });
+  const runnerRoute =
+    runnerPath(path, request.method) ||
+    (request.method === 'POST' &&
+      ['/api/terminal/claim', '/api/terminal/events'].includes(path));
+  if (runnerRoute) {
+    const device = await runnerDevice(request);
+    if (device) {
+      if (device !== 'local' && !path.startsWith('/api/terminal/'))
+        return Response.json(
+          { error: 'This device is registered for terminal jobs only.' },
+          { status: 403 },
+        );
+      headers.set('x-shoal-device', device);
+      return NextResponse.next({ request: { headers } });
+    }
+  }
+  const user = await sessionUser(request);
+  if (!user)
+    return path.startsWith('/api/')
+      ? Response.json(
+          { error: 'Sign in to your workspace.' },
+          { status: 401, headers: { 'Cache-Control': 'no-store' } },
+        )
+      : NextResponse.redirect(new URL('/login', request.url));
+  if (runnerRoute && !path.startsWith('/api/approvals'))
+    return Response.json(
+      { error: 'A registered runner is required.' },
+      { status: 403 },
+    );
+  if (!isAdmin(user) && path.startsWith('/api/')) {
+    const allowed = [
+      '/api/state',
+      '/api/workspace',
+      '/api/events',
+      '/api/stream',
+      '/api/messages',
+      '/api/conversations',
+      '/api/documents',
+      '/api/documents/reindex',
+      '/api/context',
+      '/api/runs',
+      '/api/tasks',
+      '/api/terminal',
+      '/api/team',
+      '/api/connections',
+      '/api/runtime',
+      '/api/search',
+      '/api/integrations',
+      '/api/integrations/google',
+    ];
+    const readOnly = ['/api/connections', '/api/runtime'].includes(path);
+    if (
+      (!allowed.includes(path) &&
+        !/^\/api\/(runs\/[^/]+\/cancel|tasks\/[^/]+|approvals\/[^/]+|messages\/[^/]+\/reactions)$/.test(path)) ||
+      (readOnly && request.method !== 'GET')
+    )
+      return Response.json(
+        { error: 'Workspace administration requires an admin.' },
+        { status: 403 },
+      );
+    if (
+      user.role === 'viewer' &&
+      !['GET', 'HEAD'].includes(request.method) &&
+      !['/api/team', '/api/context','/api/conversations'].includes(path)
+    )
+      return Response.json(
+        { error: 'Viewers cannot change the workspace or execute tools.' },
+        { status: 403 },
+      );
+  }
+  headers.set('x-shoal-user', user.id);
+  headers.set('x-shoal-role', user.role);
+  return NextResponse.next({ request: { headers } });
 }
-
-export const config = { matcher: ["/api/:path*"] };
+export const config = { matcher: ['/', '/login', '/join', '/api/:path*'] };

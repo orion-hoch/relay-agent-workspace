@@ -22,35 +22,20 @@ export type MessageRecord = {
   runId?: string | null;
   state?: 'pending' | 'error' | 'complete' | null;
   error?: string | null;
-  attachment?: { name: string; detail: string } | null;
+  attachment?: { name: string; detail: string; documentId?: string } | null;
+  reactions?: Record<string, string[]>;
 };
 
-export type TaskRecord = {
-  id: string;
-  project: string;
-  title: string;
-  description: string;
-  status: string;
-  owner: string;
-  priority: string;
-  due: string;
-  label: string;
-  comments: string[];
-  deliverable?: string | null;
-  parentId?: string | null;
-  criteria?: string | null;
-  createdAt: string;
-};
+export type SearchMessage = MessageRecord & { conversation: string; parent: MessageRecord | null };
 
-export type RunStatus = 'queued' | 'preparing' | 'running' | 'awaiting' | 'completed' | 'failed' | 'cancelled';
+export type RunStatus = 'queued' | 'preparing' | 'running' | 'awaiting' | 'paused' | 'needs_input' | 'completed' | 'failed' | 'cancelled';
 export type RunMode = 'quick' | 'deep';
 export type RunRecord = {
   id: string;
-  kind: 'chat' | 'task' | 'subtask';
+  kind: 'chat' | 'subtask';
   agentId: string;
   room?: string | null;
   messageId?: string | null;
-  taskId?: string | null;
   parentRunId?: string | null;
   status: RunStatus;
   backend: 'vllm' | 'openclaw';
@@ -76,7 +61,7 @@ export type Passage = {
   idx: number;
   text: string;
   score: number;
-  level: Level;
+  level: string;
 };
 
 export type Packet = {
@@ -94,6 +79,7 @@ export type Packet = {
   model: string;
   backend: 'vllm' | 'openclaw';
   sessionKey: string;
+  inferenceModel?: string; // Actual local model pinned when this run was requested.
 };
 
 export type DocumentRecord = {
@@ -102,11 +88,14 @@ export type DocumentRecord = {
   type: string;
   size: number;
   collection: string;
-  level: Level;
+  sourceRoom?: string | null;
+  relativePath?: string | null;
+  level: string;
   owner: string;
   audiences: string[];
   agents: string[];
-  status: 'received' | 'extracting' | 'indexing' | 'ready' | 'failed' | 'stale';
+  readers?: string[];
+  status: 'received' | 'extracting' | 'indexing' | 'ready' | 'stored' | 'failed' | 'stale';
   textChars: number;
   chunkCount: number;
   updatedAt: string;
@@ -140,22 +129,24 @@ export type NodeRecord = {
   kind: 'inference' | 'embedding' | 'rerank' | 'gateway';
   status: string;
   data: Record<string, unknown>;
-  seenAt: string;
 };
 
 export type EventRecord = { seq: number; ts: string; type: string; payload: Record<string, unknown> };
 
+export type ChannelRecord = {name:string;displayName?:string;level:string;agents:string[]|null;topic?:string;description?:string};
 export type WorkspaceState = {
+  channelDetails?: ChannelRecord[];
+  hiddenRooms?: string[];
+  privacyLayers?: import('../privacy-layers').PrivacyLayer[];
+  historyRooms?: string[];
+  user?: import('../team-types').TeamUser;
   uiState: Record<string, unknown>;
   members: MemberRecord[];
   channels: string[];
   messages: MessageRecord[];
-  projects: { id: string; name: string; description: string; color: string }[];
-  tasks: TaskRecord[];
   runs: RunRecord[];
   documents: DocumentRecord[];
   approvals: ApprovalRecord[];
-  nodes: NodeRecord[];
   collections: string[];
   rules: string;
   cursor: number;

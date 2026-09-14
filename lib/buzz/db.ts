@@ -1,12 +1,12 @@
 import { nativeChildRun } from './native-child';
-import { cleanDemoProfiles } from './profile-cleanup';
-import { renameShellDemo } from './shell-demo';
-import { BELL_COLLECTIONS, seedBell } from './bell-seed';
-import type { ApprovalRecord, DocumentRecord, EventRecord, MemberRecord, MessageRecord, NodeRecord, RunRecord, TaskRecord, WorkspaceState } from './types';
+import type { Database } from '../server/database';
+import type { Storage } from '../server/storage';
+import type { ApprovalRecord, DocumentRecord, EventRecord, MemberRecord, MessageRecord, RunRecord, WorkspaceState } from './types';
 
 export type BuzzEnv = {
-  DB: D1Database;
-  BUCKET: R2Bucket;
+  DB: Database;
+  SHOAL_SECRET_KEY?: string;
+  BUCKET: Storage;
   BUZZ_VLLM_URL?: string; // e.g. http://127.0.0.1:8000/v1
   BUZZ_VLLM_TOKEN?: string;
   BUZZ_NODE_NAME?: string;
@@ -21,12 +21,11 @@ export type BuzzEnv = {
   BUZZ_OPENCLAW_TOKEN?: string;
   BUZZ_OPENCLAW_AGENT?: string;
   BUZZ_RUNNER_TOKEN?: string; // shared secret for the runner endpoints
-  BUZZ_WORKER_BUDGET?: string; // input tokens per chat/subtask run
 };
 
-const SCHEMA = `
+export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS members(id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, initials TEXT NOT NULL, tone TEXT, data TEXT NOT NULL DEFAULT '{}');
-CREATE TABLE IF NOT EXISTS channels(name TEXT PRIMARY KEY, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS channels(name TEXT PRIMARY KEY, created_at TEXT NOT NULL, level TEXT NOT NULL DEFAULT 'Internal');
 CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, room TEXT NOT NULL, member_id TEXT NOT NULL, name TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL, run_id TEXT, state TEXT, error TEXT, client_id TEXT UNIQUE, attachment TEXT);
 CREATE INDEX IF NOT EXISTS messages_room ON messages(room, created_at);
 CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', color TEXT NOT NULL DEFAULT '#5b8def');
@@ -43,17 +42,27 @@ CREATE TABLE IF NOT EXISTS approvals(id TEXT PRIMARY KEY, run_id TEXT, title TEX
 CREATE TABLE IF NOT EXISTS nodes(id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL DEFAULT '{}', seen_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS connections(id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, config TEXT NOT NULL, secret TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS ingestion_jobs(id TEXT PRIMARY KEY, document_id TEXT NOT NULL UNIQUE, status TEXT NOT NULL, error TEXT, runner_id TEXT, lease_until TEXT, created_at TEXT NOT NULL);
+
 `;
 
-let ready: Promise<void> | null = null;
+const initialized = new WeakMap<Database, Promise<void>>();
 export function ensureSchema(env: BuzzEnv): Promise<void> {
-  // ponytail: schema bootstrap on first request per isolate; migrations when the schema stops being additive.
-  ready ??= (async () => {
-    await env.DB.exec(SCHEMA.trim().split('\n').filter(Boolean).join('\n'));
-    await seedBell(env);
-    await renameShellDemo(env);
-    await cleanDemoProfiles(env);
-  })().catch((error) => { ready = null; throw error; });
+  let ready = initialized.get(env.DB);
+  if (!ready) {
+    ready = (async () => {
+      await env.DB.exec(SCHEMA.trim());
+      await env.DB.migrate();
+      if (env.DB.dialect === 'postgres') await env.DB.exec("CREATE INDEX IF NOT EXISTS chunks_fts_search ON chunks_fts USING gin(to_tsvector('simple',text))");
+      await env.DB.batch([
+        env.DB.prepare("INSERT OR IGNORE INTO members(id,kind,name,initials,data) VALUES ('you','human','You','YO','{}')"),
+        env.DB.prepare("INSERT OR IGNORE INTO channels(name,created_at) VALUES ('general',?)").bind(now()),
+        env.DB.prepare("INSERT OR IGNORE INTO settings(key,value) VALUES ('rules','Cite your sources. Distinguish observed results from proposals.')"),
+      ]);
+    })().catch(error => { initialized.delete(env.DB); throw error; });
+    initialized.set(env.DB, ready);
+  }
   return ready;
 }
 
@@ -73,34 +82,33 @@ export async function eventsAfter(env: BuzzEnv, after: number, limit = 500): Pro
 
 // Row mappers -------------------------------------------------------------
 type Row = Record<string, unknown>;
-const s = (v: unknown) => (v == null ? null : String(v));
+export const textValue = (v: unknown): string => typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint' ? String(v) : '';
+const s = (v: unknown) => v == null ? null : textValue(v);
 export const mapMember = (r: Row): MemberRecord => ({ id: String(r.id), kind: r.kind as MemberRecord['kind'], name: String(r.name), initials: String(r.initials), tone: s(r.tone) ?? undefined, data: json(s(r.data), {}) });
-export const mapMessage = (r: Row): MessageRecord => ({ id: String(r.id), room: String(r.room), memberId: String(r.member_id), name: String(r.name), body: String(r.body), createdAt: String(r.created_at), runId: s(r.run_id), state: s(r.state) as MessageRecord['state'], error: s(r.error), attachment: json(s(r.attachment), null) });
-export const mapTask = (r: Row): TaskRecord => ({ id: String(r.id), project: String(r.project), title: String(r.title), description: String(r.description), status: String(r.status), owner: String(r.owner), priority: String(r.priority), due: String(r.due), label: String(r.label), comments: json(s(r.comments), []), deliverable: s(r.deliverable), parentId: s(r.parent_id), criteria: s(r.criteria), createdAt: String(r.created_at) });
-export const mapRun = (r: Row, withPacket = false): RunRecord => ({ id: String(r.id), kind: r.kind as RunRecord['kind'], agentId: String(r.agent_id), room: s(r.room), messageId: s(r.message_id), taskId: s(r.task_id), parentRunId: s(r.parent_run_id), status: r.status as RunRecord['status'], mode: r.mode === 'deep' ? 'deep' : 'quick', triggerMessageId: s(r.trigger_message_id), attempt: Number(r.attempt || 0), estimatedInputTokens: r.estimated_input_tokens == null ? null : Number(r.estimated_input_tokens), backend: r.backend as RunRecord['backend'], model: s(r.model), packet: withPacket ? json(s(r.packet), null) : null, result: s(r.result), error: s(r.error), inputTokens: r.input_tokens as number | null, outputTokens: r.output_tokens as number | null, createdAt: String(r.created_at), startedAt: s(r.started_at), endedAt: s(r.ended_at) });
-export const mapDocument = (r: Row): DocumentRecord => ({ id: String(r.id), name: String(r.name), type: String(r.type), size: Number(r.size), collection: String(r.collection), level: r.level as DocumentRecord['level'], owner: String(r.owner), audiences: json(s(r.audiences), []), agents: json(s(r.agents), []), status: r.status as DocumentRecord['status'], textChars: Number(r.text_chars), chunkCount: Number(r.chunk_count), updatedAt: String(r.updated_at), error: s(r.error) });
+export const mapMessage = (r: Row): MessageRecord => ({ id: String(r.id), room: String(r.room), memberId: String(r.member_id), name: String(r.name), body: String(r.body), createdAt: String(r.created_at), runId: s(r.run_id), state: s(r.state) as MessageRecord['state'], error: s(r.error), attachment: json(s(r.attachment), null), reactions: json(s(r.reactions), {}) });
+export const mapRun = (r: Row, withPacket = false): RunRecord => ({ id: String(r.id), kind: r.kind as RunRecord['kind'], agentId: String(r.agent_id), room: s(r.room), messageId: s(r.message_id), parentRunId: s(r.parent_run_id), status: r.status as RunRecord['status'], mode: r.mode === 'deep' ? 'deep' : 'quick', triggerMessageId: s(r.trigger_message_id), attempt: Number(r.attempt || 0), estimatedInputTokens: r.estimated_input_tokens == null ? null : Number(r.estimated_input_tokens), backend: r.backend as RunRecord['backend'], model: s(r.model), packet: withPacket ? json(s(r.packet), null) : null, result: s(r.result), error: s(r.error), inputTokens: r.input_tokens as number | null, outputTokens: r.output_tokens as number | null, createdAt: String(r.created_at), startedAt: s(r.started_at), endedAt: s(r.ended_at) });
+export const mapDocument = (r: Row): DocumentRecord => ({ id: String(r.id), name: String(r.name), type: String(r.type), size: Number(r.size), collection: String(r.collection), sourceRoom: s(r.source_room), relativePath: s(r.relative_path), level: r.level as DocumentRecord['level'], owner: String(r.owner), audiences: json(s(r.audiences), []), agents: json(s(r.agents), []), readers: json(s(r.readers), []), status: r.status as DocumentRecord['status'], textChars: Number(r.text_chars), chunkCount: Number(r.chunk_count), updatedAt: String(r.updated_at), error: s(r.error) });
 export const mapApproval = (r: Row): ApprovalRecord => ({ id: String(r.id), runId: s(r.run_id), title: String(r.title), agent: String(r.agent), body: String(r.body), action: String(r.action), source: s(r.source), externalId: s(r.external_id), sessionKey: s(r.session_key), expiresAt: s(r.expires_at), receipt: json(s(r.receipt), null), status: r.status as ApprovalRecord['status'], level: r.level as ApprovalRecord['level'], recipient: String(r.recipient), workflow: String(r.workflow), decidedBy: s(r.decided_by), decidedAt: s(r.decided_at), createdAt: String(r.created_at) });
-export const mapNode = (r: Row): NodeRecord => ({ id: String(r.id), name: String(r.name), kind: r.kind as NodeRecord['kind'], status: String(r.status), data: json(s(r.data), {}), seenAt: String(r.seen_at) });
 
-export async function loadState(env: BuzzEnv): Promise<WorkspaceState> {
+import { loadPrivacyLayers } from '../server/privacy-layers';
+
+export async function loadState(env: BuzzEnv, rooms?: string[]): Promise<WorkspaceState> {
   await ensureSchema(env);
-  const [members, channels, messages, projects, tasks, runs, documents, approvals, nodes, rules, cursor, uiSettings] = await env.DB.batch([
-    env.DB.prepare('SELECT * FROM members ORDER BY kind, name'),
-    env.DB.prepare('SELECT name FROM channels ORDER BY created_at'),
-    env.DB.prepare('SELECT * FROM (SELECT * FROM messages ORDER BY created_at DESC LIMIT 2000) ORDER BY created_at'),
-    env.DB.prepare('SELECT * FROM projects ORDER BY name'),
-    env.DB.prepare('SELECT * FROM tasks ORDER BY created_at'),
-    env.DB.prepare('SELECT * FROM runs ORDER BY created_at DESC LIMIT 200'),
+  const audience = rooms ? `room IN (${rooms.map(() => '?').join(',') || 'NULL'})` : '1=1';
+  const [members, channels, messages, runs, documents, approvals, rules, cursor, uiSettings] = await env.DB.batch([
+    env.DB.prepare('SELECT * FROM members WHERE NOT EXISTS (SELECT 1 FROM users WHERE users.id=members.id AND users.removed_at IS NOT NULL) ORDER BY kind, name'),
+    env.DB.prepare('SELECT name,display_name,level,agents,topic,description FROM channels ORDER BY created_at'),
+    env.DB.prepare(`SELECT * FROM (SELECT * FROM messages WHERE ${audience} ORDER BY created_at DESC, id DESC LIMIT 2000) AS recent ORDER BY created_at, id`).bind(...(rooms ?? [])),
+    env.DB.prepare(`SELECT * FROM runs WHERE ${audience} OR room IS NULL ORDER BY created_at DESC LIMIT 200`).bind(...(rooms ?? [])),
     env.DB.prepare('SELECT * FROM documents ORDER BY updated_at DESC'),
     env.DB.prepare('SELECT * FROM approvals ORDER BY created_at DESC'),
-    env.DB.prepare('SELECT * FROM nodes ORDER BY name'),
     env.DB.prepare("SELECT value FROM settings WHERE key = 'rules'"),
     env.DB.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events'),
     env.DB.prepare("SELECT key, value FROM settings WHERE key LIKE 'ui:%'"),
   ]);
   const docs = (documents.results as Row[]).map(mapDocument);
   const parents = (runs.results as Row[]).map(row => mapRun(row));
-  const observations = await env.DB.prepare("SELECT run_id, payload FROM run_events WHERE type='tool' AND json_extract(payload,'$.name')='native.agent' AND run_id IN (SELECT id FROM runs ORDER BY created_at DESC LIMIT 200) ORDER BY id").all<{ run_id: string; payload: string }>();
+  const observations = await env.DB.prepare("SELECT run_id, payload FROM run_events WHERE type='tool' AND json_extract(payload,'$.name') IN ('native.agent','direct.agent') AND run_id IN (SELECT id FROM runs ORDER BY created_at DESC LIMIT 200) ORDER BY id").all<{ run_id: string; payload: string }>();
   const nativeRuns = new Map<string, RunRecord>();
   for (const observation of observations.results) {
     const parent = parents.find(run => run.id === observation.run_id);
@@ -112,15 +120,14 @@ export async function loadState(env: BuzzEnv): Promise<WorkspaceState> {
     uiState: Object.fromEntries((uiSettings.results as { key: string; value: string }[]).map(row => [row.key.slice(3), json(row.value, null)])),
     members: (members.results as Row[]).map(mapMember),
     channels: (channels.results as Row[]).map((r) => String(r.name)),
+    channelDetails: (channels.results as Row[]).map(r=>({name:String(r.name),displayName:textValue(r.display_name)||String(r.name),level:String(r.level),topic:textValue(r.topic),description:textValue(r.description),agents:r.agents===null?null:json<string[]>(textValue(r.agents),[])})),
     messages: (messages.results as Row[]).map(mapMessage),
-    projects: projects.results as WorkspaceState['projects'],
-    tasks: (tasks.results as Row[]).map(mapTask),
     runs: [...parents, ...nativeRuns.values()],
     documents: docs,
+    privacyLayers: await loadPrivacyLayers(env),
     approvals: (approvals.results as Row[]).map(mapApproval),
-    nodes: (nodes.results as Row[]).map(mapNode),
-    collections: [...new Set([...BELL_COLLECTIONS, ...docs.map((d) => d.collection)])],
-    rules: String((rules.results[0] as Row | undefined)?.value ?? ''),
+    collections: [...new Set(docs.map((d) => d.collection))],
+    rules: textValue((rules.results[0] as Row | undefined)?.value),
     cursor: Number((cursor.results[0] as Row).seq),
   };
 }
@@ -133,12 +140,4 @@ export function ok(data: unknown, status = 200) {
 }
 export async function body<T = Record<string, unknown>>(request: Request): Promise<T | null> {
   try { const v = await request.json(); return v && typeof v === 'object' ? (v as T) : null; } catch { return null; }
-}
-export function sameOrigin(request: Request): boolean {
-  const origin = request.headers.get('Origin');
-  return !origin || origin === new URL(request.url).origin;
-}
-export function runnerAuthorized(request: Request, env: BuzzEnv): boolean {
-  const token = request.headers.get('Authorization')?.replace(/^Bearer\s+/i, '');
-  return !!env.BUZZ_RUNNER_TOKEN && token === env.BUZZ_RUNNER_TOKEN;
 }

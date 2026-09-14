@@ -1,1 +1,0 @@
-.agent-card-created{animation:agent-card-appear 200ms cubic-bezier(.2,.8,.2,1) both}@keyframes agent-card-appear{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}@media(prefers-reduced-motion:reduce){.agent-card-created{animation:none}}

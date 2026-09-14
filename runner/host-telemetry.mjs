@@ -1,6 +1,4 @@
-#!/usr/bin/env node
-import { cpus, totalmem, freemem, hostname } from 'node:os';
-import { pathToFileURL } from 'node:url';
+import { cpus, totalmem, freemem } from 'node:os';
 import { readFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -61,28 +59,4 @@ export function startHostTelemetry(report, { keepAlive = false } = {}) {
   const timer = setInterval(() => { void tick(); }, 5000);
   if (!keepAlive) timer.unref();
   return () => clearInterval(timer);
-}
-
-// A separate collector can report while the existing runner finishes active chats.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  if (process.argv.includes('--sample')) {
-    console.log(JSON.stringify(await createHostSampler()()));
-  } else {
-    const base = (process.env.BUZZ_API || 'http://127.0.0.1:5173').replace(/\/$/, '');
-    const token = process.env.BUZZ_RUNNER_TOKEN;
-    if (!token) throw new Error('BUZZ_RUNNER_TOKEN is required to report host telemetry.');
-    const report = async metrics => {
-      const response = await fetch(`${base}/api/compute/heartbeat`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ runnerId: `${hostname()}:telemetry`, metrics }), signal: AbortSignal.timeout(5000),
-      });
-      await response.body?.cancel();
-      if (!response.ok) throw new Error(`Telemetry endpoint returned HTTP ${response.status}`);
-    };
-    if (process.argv.includes('--once')) {
-      const metrics = await createHostSampler()();
-      await report(metrics);
-      console.log(JSON.stringify(metrics));
-    } else startHostTelemetry(report, { keepAlive: true });
-  }
 }

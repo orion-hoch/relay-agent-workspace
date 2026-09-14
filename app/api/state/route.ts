@@ -1,6 +1,6 @@
-import { env } from 'cloudflare:workers';
-import { type BuzzEnv, loadState, ok } from '@/lib/buzz/db';
-export const dynamic = 'force-dynamic';
-export async function GET() {
-  return ok(await loadState(env as unknown as BuzzEnv));
-}
+import { env } from '@/lib/server/env';
+import { ok } from '@/lib/buzz/db';
+import { actor, userById } from '@/lib/server/team';
+import { visibleState } from '@/lib/server/access';
+export const dynamic='force-dynamic';
+export async function GET(request:Request) { return ok(await visibleState(env,(await userById(actor(request).id))!)); }

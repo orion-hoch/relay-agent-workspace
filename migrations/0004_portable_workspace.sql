@@ -1,0 +1,2 @@
+ALTER TABLE channels ADD COLUMN level TEXT NOT NULL DEFAULT 'Internal';
+ALTER TABLE runs ADD COLUMN connection_id TEXT;

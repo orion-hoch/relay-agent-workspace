@@ -10,7 +10,7 @@ export function AgentThinkingBubble({ name, agentId }: { name: string; agentId: 
     const frame = requestAnimationFrame(() => {
       if (show) setPresence('shown');
       else {
-        setPresence('hiding');
+        setPresence(current => current === 'hidden' ? 'hidden' : 'hiding');
         timer = setTimeout(() => setPresence('hidden'), 220);
       }
     });
@@ -19,7 +19,6 @@ export function AgentThinkingBubble({ name, agentId }: { name: string; agentId: 
   if (presence === 'hidden') return null;
   return <output className="agent-thinking-bubble" data-presence={presence}
     aria-label={`${name} is thinking`}>
-    <span className="agent-thinking-animation" aria-hidden="true" />
-    <span className="agent-thinking-static" aria-hidden="true">···</span>
+    Thinking
   </output>;
 }

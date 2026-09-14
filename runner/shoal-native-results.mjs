@@ -100,7 +100,3 @@ export function watchNativeDelegation({ baseUrl, token, sessionKey, afterSeq, ti
   task.catch(() => {}); // The HTTP caller awaits finish; avoid an early unhandled rejection.
   return { finish: () => { httpFinished = true; return task; }, stop: () => controller.abort() };
 }
-
-export function awaitNativeDelegation(options) {
-  return watchNativeDelegation(options).finish();
-}

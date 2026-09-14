@@ -1,63 +1,67 @@
 'use client';
+import Image from 'next/image';
+import { SeaweedIcon } from '@/components/SeaweedIcon';
 
-import { ChatDeepDiveActivity, ChatDeepDiveControl } from './components/ChatDeepDiveControl';
-import './components/chat-deep-dive.css';
+import { DEFAULT_LAYERS } from '@/lib/privacy-layers';
+import { EmojiPicker } from './components/EmojiPicker';
+import { ConversationMenu } from './components/ConversationMenu';
+import { ChannelBrowser } from './components/ChannelBrowser';
+import { RenameChannel } from './components/RenameChannel';
+import { ChannelDialog } from './components/ChannelDialog';
+import { agentCanAccessChannel } from '@/lib/buzz/context-scope';
+import { ChatDeepDiveActivity, ChatDeepDiveControl, type ChatMode } from './components/ChatDeepDiveControl';
 import { DeepDiveAvatar } from '@/components/DeepDiveAvatar';
-import './components/deep-dive-avatar.css';
-import type { RunMode } from '@/lib/buzz/types';
-import { buzz, useBuzz } from '@/lib/buzz/store';
+import type { MessageRecord } from '@/lib/buzz/types';
+import { buzz, call, useBuzz } from '@/lib/buzz/store';
+import { MessageBody } from './components/MessageBody';
+import { HistoryButton } from './components/HistoryButton';
+import { CommandPanel, type CommandRequest } from './components/CommandPanel';
+import { Quickstart } from './components/Quickstart';
+import { ModelPanel, openModels } from './components/ModelPanel';
+import { commands, parseCommand } from '@/lib/commands';
 import { useWorkspaceSetting } from '@/lib/buzz/use-workspace-setting';
 import {
-  AgentAvatar,
   setAgentActivity,
   setAgentAvailability,
 } from '@/components/AgentAvatar';
-import { SettingsView } from './components/SettingsView';
+import { ChatTaskOptions, ChatTaskMessage, ChatTaskActivity, useChatTasks, type TaskDraft } from './components/ChatTasks';
+import { taskActive, type AgentTask } from '@/lib/task-types';
+import { TerminalView, terminalAction } from './components/TerminalView';
+import { SettingsView, type Preferences } from './components/SettingsView';
 import { InboxView } from './components/InboxView';
-import { useWorkspaceName } from '@/lib/workspace-name';
-import { HuddlesView } from './components/HuddlesView';
+import { isAdmin } from '@/lib/team-types';
+import { clockTime, escapeRegExp } from '@/lib/format';
 import {
   useWorkspaceMembers,
   type WorkspaceMember,
 } from '@/lib/workspace-members';
 import { LiveComposer, type ComposerHandle } from './LiveComposer';
-import './live-chat.css';
 import { MemberAvatar } from '@/components/MemberAvatar';
 import { useAgentHomes } from '@/lib/agent-homes';
-import './chat-quality.css';
 import { ChatHeader } from '@/components/buzz/ChatHeader';
 
-import { isValidElement, useEffect, useMemo, useRef, useState } from 'react';
-import type { ReactNode, SyntheticEvent, CSSProperties } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode, CSSProperties, SetStateAction } from 'react';
 import {
   Archive,
   AtSign,
   Bold,
   Code,
   CheckCircle2,
-  ChevronDown,
   ChevronRight,
-  CircleHelp,
-  Cpu,
   Database,
   FileText,
   Hash,
   Inbox,
-  Info,
   MessageCircle,
-  MoreHorizontal,
+  PanelRight,
   Paperclip,
   Plus,
   Search,
   Send,
   Settings,
-  ShieldCheck,
-  Smile,
-  Star,
   Users,
-  ThumbsUp,
   X,
-  Zap,
 } from 'lucide-react';
 import {
   Dialog,
@@ -73,15 +77,14 @@ import {
   Sidebar,
   SidebarContent,
   SidebarHeader,
-  SidebarFooter,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarTrigger,
 } from '@/components/ui/sidebar';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { DataView } from './components/DataView';
-import { ComputeView } from './components/ComputeView';
+import { DataView, openGoogleDrive, openDataFile, openFileUpload } from './components/DataView';
+import { AgentsView } from './components/AgentsView';
 
 type View =
   | 'chat'
@@ -89,8 +92,9 @@ type View =
   | 'agents'
   | 'data'
   | 'compute'
-  | 'huddles'
-  | 'settings';
+  | 'settings'
+  | 'terminal';
+const viewFor = (next: string) => (next === 'agents' ? 'compute' : next) as View;
 type Message = {
   id: string;
   runId?: string;
@@ -98,22 +102,15 @@ type Message = {
   initials: string;
   tone: string;
   time: string;
-  body: ReactNode;
+  body: string;
   agent?: 'local' | 'cloud';
-  reactions?: number;
-  replies?: number;
+  createdAt: string;
   memberId?: string;
   requestState?: 'pending' | 'error' | 'complete';
   error?: string;
-  attachment?: { name: string; detail: string };
+  attachment?: { name: string; detail: string; documentId?: string };
+  reactions?: Record<string, string[]>;
 };
-function plainText(node: ReactNode): string {
-  if (typeof node === 'string' || typeof node === 'number') return String(node);
-  if (Array.isArray(node)) return node.map(plainText).join(' ');
-  if (isValidElement<{ children?: ReactNode }>(node))
-    return plainText(node.props.children);
-  return '';
-}
 function resolveMember(
   members: readonly WorkspaceMember[],
   id?: string,
@@ -123,6 +120,25 @@ function resolveMember(
     ? members.find((member) => member.id === id)
     : members.find((member) => member.name === name);
 }
+function toMessage(record: MessageRecord, members: readonly WorkspaceMember[]): Message {
+  const member = resolveMember(members, record.memberId, record.name);
+  return {
+    id: record.id,
+    runId: record.runId ?? undefined,
+    name: member?.name ?? record.name,
+    memberId: record.memberId,
+    initials: member?.initials ?? record.name.slice(0, 2),
+    tone: member?.tone ?? 'mint',
+    body: record.body,
+    time: clockTime(record.createdAt),
+    agent: member?.kind === 'agent' ? member.runtime : undefined,
+    createdAt: record.createdAt,
+    requestState: record.state ?? undefined,
+    error: record.error ?? undefined,
+    attachment: record.attachment ?? undefined,
+    reactions: record.reactions,
+  };
+}
 function MemberClearance({ member }: { member?: WorkspaceMember }) {
   return member?.kind === 'agent' ? (
     <span className="member-clearance">
@@ -130,18 +146,16 @@ function MemberClearance({ member }: { member?: WorkspaceMember }) {
     </span>
   ) : null;
 }
-function messageText(text: string): ReactNode {
-  return text.split(/(\*\*[^*]+\*\*|@[\w-]+)/g).map((part, index) =>
-    part.startsWith('**') ? (
-      <strong key={index}>{part.slice(2, -2)}</strong>
-    ) : part.startsWith('@') ? (
-      <span className="mention" key={index}>
-        {part}
-      </span>
-    ) : (
-      part
-    ),
-  );
+function dayLabel(iso?: string) {
+  if (!iso) return '';
+  const date = new Date(iso);
+  const days = Math.round((new Date().setHours(0, 0, 0, 0) - new Date(date).setHours(0, 0, 0, 0)) / 86400000);
+  return days === 0 ? 'Today' : days === 1 ? 'Yesterday' : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: date.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' });
+}
+// Member names may contain spaces, so mention matching is built from the roster (longest first).
+function mentionPattern(members: readonly WorkspaceMember[]) {
+  const names = members.map((m) => m.name).sort((a, b) => b.length - a.length).map(escapeRegExp);
+  return new RegExp(`(\\*\\*[^*]+\\*\\*|@(?:${[...names, '[\\w-]+'].join('|')}))`);
 }
 
 function NavigationContent({ children }: { children: ReactNode }) {
@@ -163,49 +177,44 @@ function NavigationContent({ children }: { children: ReactNode }) {
 }
 export function Workspace() {
   const members = useWorkspaceMembers();
-  const workspaceName = useWorkspaceName();
-  const [, setMentionedIds] = useState<string[]>([]);
   const [memberProfile, setMemberProfile] = useState<WorkspaceMember | null>(
     null,
   );
 
   const [view, setView] = useState<View>('chat');
   const [channel, setChannel] = useState('');
-  const [runModes, setRunModes] = useState<Record<string, RunMode>>({});
+  const [dm, setDm] = useState<string | null>(null);
+  const [runModes, setRunModes] = useState<Record<string, ChatMode>>({});
   const {
     messages: sharedMessages,
     channels: sharedChannels,
+    channelDetails,
+    hiddenRooms=[],
+    privacyLayers=DEFAULT_LAYERS,
+    members: sharedMembers,
     runs,
     approvals,
     loaded: sharedLoaded,
+    user,
+    uiState,
   } = useBuzz();
+  const workspaceName = typeof uiState.workspaceName === 'string' ? uiState.workspaceName : 'My workspace';
+  const currentUserId = user?.id || '';
+  const {tasks,loaded:tasksLoaded,reload:reloadTasks}=useChatTasks(currentUserId,view==='chat'?channel:'');
+  const [taskDrafts,setTaskDrafts]=useState<Record<string,TaskDraft>>({});
+  const [taskSending,setTaskSending]=useState<Record<string,boolean>>({});
+  const taskSendingRef=useRef(new Set<string>());
+  const taskAgents=members.filter(member=>member.kind==='agent' && !member.paused && (dm ? member.id===dm : sharedMembers.some(record=>record.id===member.id && agentCanAccessChannel(record,channelDetails?.find(item=>item.name===channel)||{name:channel,level:'Internal',agents:null},privacyLayers))));
+  const taskOptions=(room:string)=>runModes[room]==='task' ? <ChatTaskOptions key={room} value={taskDrafts[room] || {}} onChange={value=>setTaskDrafts(all=>({...all,[room]:value}))} agents={taskAgents} disabled={!!taskSending[room]}/> : null;
+  const mention = useMemo(() => mentionPattern(members), [members]);
   const channels = sharedChannels;
+  const channelLabel=(room:string)=>channelDetails?.find(item=>item.name===room)?.displayName || room;
   useEffect(() => {
-    if (!channel && channels.length) setChannel(channels[0]);
-  }, [channel, channels]);
+    if (!channel && channels.some(name=>!hiddenRooms.includes(name))) { const timer = setTimeout(() => setChannel(channels.find(name=>!hiddenRooms.includes(name))!), 0); return () => clearTimeout(timer); }
+  }, [channel, channels,hiddenRooms]);
   const messagesByRoom = useMemo(() => {
     const rooms: Record<string, Message[]> = {};
-    for (const record of sharedMessages) {
-      const member = resolveMember(members, record.memberId, record.name);
-      const message: Message = {
-        id: record.id,
-        runId: record.runId ?? undefined,
-        name: member?.name ?? record.name,
-        memberId: record.memberId,
-        initials: member?.initials ?? record.name.slice(0, 2),
-        tone: member?.tone ?? 'mint',
-        body: record.body,
-        time: new Date(record.createdAt).toLocaleTimeString([], {
-          hour: 'numeric',
-          minute: '2-digit',
-        }),
-        agent: member?.kind === 'agent' ? member.runtime : undefined,
-        requestState: record.state ?? undefined,
-        error: record.error ?? undefined,
-        attachment: record.attachment ?? undefined,
-      };
-      (rooms[record.room] ??= []).push(message);
-    }
+    for (const record of sharedMessages) (rooms[record.room] ??= []).push(toMessage(record, members));
     return rooms;
   }, [sharedMessages, members]);
   const messages = messagesByRoom[channel] ?? [];
@@ -231,7 +240,20 @@ export function Workspace() {
       );
     }
   }, [members, runs]);
-  const [draft, setDraft] = useState('');
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const draft = drafts[channel] ?? '';
+  const writeDraft = (room: string, update: SetStateAction<string>) => setDrafts(all => {
+    const next = typeof update === 'function' ? update(all[room] ?? '') : update;
+    const copy = { ...all }; if (next) copy[room] = next; else delete copy[room]; return copy;
+  });
+  const setDraft = (update: SetStateAction<string>) => writeDraft(channel, update);
+  const [commandRequest, setCommandRequest] = useState<CommandRequest | null>(null);
+  const [quickstartOpen, setQuickstartOpen] = useState(false);
+  const closeQuickstart = () => {
+    setQuickstartOpen(false);
+    try { localStorage.setItem('shoal-quickstart:' + currentUserId, 'seen'); } catch { /* Optional preference. */ }
+  };
+
   const [toast, setToast] = useState('');
   useEffect(() => {
     const notice = (event: Event) => setToast(String((event as CustomEvent).detail));
@@ -239,6 +261,12 @@ export function Workspace() {
     return () => window.removeEventListener('shoal:notice', notice);
   }, []);
   const homes = useAgentHomes();
+  useEffect(() => {
+    const tick = () => void buzz.runtime().catch(() => {});
+    tick();
+    const timer = setInterval(tick, 30000);
+    return () => clearInterval(timer);
+  }, []);
   useEffect(() => {
     members.forEach((member) => {
       if (member.kind === 'agent')
@@ -249,6 +277,7 @@ export function Workspace() {
           ),
           member.paused === true,
           member.character,
+          member.avatar,
         );
     });
   }, [homes, members]);
@@ -258,17 +287,16 @@ export function Workspace() {
         .flat()
         .find((message) => message.id === threadSnapshot.id) ?? threadSnapshot)
     : null;
-  const [starred, setStarred] = useState(false);
   const [tab, setTab] = useState('messages');
   const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [newChannel, setNewChannel] = useState(false);
-  const [profileOpen, setProfileOpen] = useState(false);
-  const [channelName, setChannelName] = useState('');
+  const [browsingChannels,setBrowsingChannels]=useState(false),[renamingChannel,setRenamingChannel]=useState<string|null>(null);
+  const [editingChannel,setEditingChannel]=useState<string|null>(null);
   const [canvases, setCanvases] = useWorkspaceSetting<Record<string, string>>('canvases', {});
   const canvas = canvases[channel] ?? '';
   const setCanvas = (value: string) =>
-    setCanvases((all) => ({ ...all, [channel]: value }));
+    channel.startsWith('dm:') ? notify('Private conversation canvases are not available in this release.') : setCanvases((all) => ({ ...all, [channel]: value }));
   const [peopleOpen, setPeopleOpen] = useState(false);
   const [approvalOpen, setApprovalOpen] = useState(false);
   const [selectedApprovalId, setSelectedApprovalId] = useState<string | null>(null);
@@ -276,59 +304,95 @@ export function Workspace() {
     approvals.find(item => item.id === selectedApprovalId) ?? approvals.find((item) => item.status === 'Pending') ?? approvals[0];
   const approval = activeApproval?.status ?? 'No pending review';
   const [approvalBusy, setApprovalBusy] = useState(false);
+  const [approvalClock, setApprovalClock] = useState(() => Date.now());
+  useEffect(() => { const timer = setInterval(() => setApprovalClock(Date.now()), 1000); return () => clearInterval(timer); }, []);
   const approvalActionable = !!activeApproval && activeApproval.status === 'Pending' && !activeApproval.receipt
-    && (!activeApproval.expiresAt || Date.parse(activeApproval.expiresAt) > Date.now());
-  const [replies, setReplies] = useState<Record<string, string[]>>({});
-  const [preferences, setPreferences] = useState([true, false, true]);
-  const [reactionCounts, setReactionCounts] = useState<Record<string, number>>(
-    {},
-  );
+    && (!activeApproval.expiresAt || Date.parse(activeApproval.expiresAt) > approvalClock);
+  const [preferences, setPreferences] = useState<Preferences>({ compact: false, shortcuts: true });
+  const [inboxRead, setInboxRead] = useState<string[]>([]);
+  // ponytail: read markers live per device in localStorage; move to a server-side read_markers table if cross-device unread matters.
+  const [lastRead, setLastRead] = useState<Record<string, string>>({});
+  const [hydratedAt, setHydratedAt] = useState('');
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => {
+    if (!currentUserId || !sharedLoaded || hydrated) return;
     const timeout = window.setTimeout(() => {
       try {
-        const saved = localStorage.getItem('relay-workspace-v1');
+        const saved = localStorage.getItem('shoal-workspace:'+currentUserId);
         if (saved) {
-          const data = JSON.parse(saved) as {
-            replies?: Record<string, string[]>;
-            reactions?: Record<string, number>;
-            preferences?: boolean[];
-            draft?: string;
-          };
-          if (data.replies) setReplies(data.replies);
-          if (data.reactions) setReactionCounts(data.reactions);
-          if (data.preferences?.length === 3) setPreferences(data.preferences);
-          if (typeof data.draft === 'string') setDraft(data.draft);
+          const data = JSON.parse(saved) as { preferences?: Preferences; runModes?:Record<string,ChatMode>; taskDrafts?:Record<string,TaskDraft>; draft?: string; drafts?: Record<string, string>; lastRead?: Record<string, string>; inboxRead?: string[]; location?: {view?:string;channel?:string;tab?:string;threadId?:string} };
+          if (data.preferences && typeof data.preferences === 'object' && !Array.isArray(data.preferences)) setPreferences({ compact: !!data.preferences.compact, shortcuts: data.preferences.shortcuts !== false });
+          if (Array.isArray(data.inboxRead)) setInboxRead(data.inboxRead.filter((id): id is string => typeof id === 'string'));
+          if (data.drafts && typeof data.drafts === 'object' && !Array.isArray(data.drafts)) setDrafts(Object.fromEntries(Object.entries(data.drafts).filter((entry): entry is [string, string] => typeof entry[1] === 'string')));
+          else if (typeof data.draft === 'string') setDrafts({ [channels[0] || 'general']: data.draft });
+          if(data.runModes)setRunModes(Object.fromEntries(Object.entries(data.runModes).filter(([,mode])=>['quick','deep','task'].includes(mode))));
+          if(data.taskDrafts)setTaskDrafts(Object.fromEntries(Object.entries(data.taskDrafts).map(([room,value])=>[room,{...value,repositoryToken:undefined}])));
+          if (data.lastRead && typeof data.lastRead === 'object') setLastRead(data.lastRead);
+          const location=data.location;
+          if(location){
+            if(['chat','inbox','agents','data','compute','settings','terminal'].includes(location.view || ''))setView(viewFor(location.view!));
+            const room=location.channel || '';
+            const peer=room.startsWith('dm:') ? members.find(member=>member.id===room.slice(3)) : undefined;
+            if(peer || channels.includes(room)){setChannel(room);setDm(peer?.id || null);}
+            if(['messages','canvas','files'].includes(location.tab || ''))setTab(location.tab!);
+            const parent=sharedMessages.find(message=>message.id===location.threadId && message.room===room);
+            if(parent)setThread(toMessage(parent,members));
+          }
         }
       } catch {
         /* Preferences are optional if storage is unavailable. */
       }
+      try { if (!localStorage.getItem('shoal-quickstart:' + currentUserId) && !members.some(member => member.kind === 'agent')) setQuickstartOpen(true); } catch { /* Optional onboarding preference. */ }
+      setHydratedAt(new Date().toISOString());
       setHydrated(true);
     }, 0);
     return () => window.clearTimeout(timeout);
-  }, []);
+  }, [currentUserId, sharedLoaded, sharedMessages, hydrated, channels, members]);
   useEffect(() => {
     if (!hydrated) return;
     try {
       localStorage.setItem(
-        'relay-workspace-v1',
-        JSON.stringify({
-          replies,
-          reactions: reactionCounts,
-          preferences,
-          draft,
-        }),
+        'shoal-workspace:'+currentUserId,
+        JSON.stringify({ preferences, drafts, runModes, taskDrafts:Object.fromEntries(Object.entries(taskDrafts).map(([room,value])=>[room,{...value,repositoryToken:undefined}])), lastRead, inboxRead, location:{view,channel,tab,threadId:threadSnapshot?.id} }),
       );
     } catch {
       /* Session state remains usable if browser storage is full. */
     }
-  }, [hydrated, replies, reactionCounts, preferences, draft]);
+  }, [hydrated, preferences, drafts, lastRead, inboxRead, currentUserId,view,channel,tab,threadSnapshot,runModes,taskDrafts]);
+  const latestInRoom = (room: string) => messagesByRoom[room]?.at(-1)?.createdAt ?? '';
+  useEffect(() => {
+    if (!hydrated || view !== 'chat' || !channel) return;
+    const rooms = [...(tab === 'messages' ? [channel] : []), ...(threadSnapshot ? [`thread:${threadSnapshot.id}`] : [])];
+    const markVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      const stamp = new Date().toISOString();
+      setLastRead(all => {
+        const next = {...all};
+        for (const room of rooms) {
+          const latest = latestInRoom(room);
+          if (latest) next[room] = [all[room] || '', stamp, latest, ...runs.filter(run => run.room === room).map(run => run.endedAt || '')].sort().at(-1)!;
+        }
+        return next;
+      });
+    };
+    const timer = setTimeout(markVisible, 0);
+    document.addEventListener('visibilitychange', markVisible);
+    window.addEventListener('focus', markVisible);
+    return () => { clearTimeout(timer); document.removeEventListener('visibilitychange', markVisible); window.removeEventListener('focus', markVisible); };
+  }, [hydrated, view, channel, tab, threadSnapshot?.id, messagesByRoom, runs]); // eslint-disable-line react-hooks/exhaustive-deps
+  const unreadCount = (room: string) => {
+    if (!hydrated || (view === 'chat' && room === channel)) return 0;
+    const since = lastRead[room] ?? hydratedAt;
+    return (messagesByRoom[room] ?? []).filter(m => m.createdAt > since && m.memberId !== currentUserId).length;
+  };
   const currentRef = useRef({ channel, view });
   useEffect(() => {
     currentRef.current = { channel, view };
   }, [channel, view]);
-  const [dm, setDm] = useState<string | null>(null);
-  const [threadReply, setThreadReply] = useState('');
+  const threadRoom = thread ? `thread:${thread.id}` : '';
+  const threadTask=tasks.find(task=>task.room===threadRoom);
+  const threadReply = drafts[threadRoom] ?? '';
+  const setThreadReply = (update: SetStateAction<string>) => writeDraft(threadRoom, update);
   const threadComposerRef = useRef<ComposerHandle>(null);
   const [panelWidth, setPanelWidth] = useState(390);
   const panelRef = useRef<HTMLElement>(null);
@@ -338,7 +402,6 @@ export function Workspace() {
   const openThread = (message: Message) => {
     setMemberProfile(null);
     setThread(message);
-    setThreadReply('');
   };
   const openProfile = (member: WorkspaceMember) => {
     setThread(null);
@@ -366,7 +429,7 @@ export function Workspace() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        if (!preferences[2]) return;
+        if (!preferences.shortcuts) return;
         e.preventDefault();
         setSearchOpen(true);
       }
@@ -393,8 +456,8 @@ export function Workspace() {
       'agents',
       'data',
       'compute',
-      'huddles',
       'settings',
+      'terminal',
     ]);
     const result = (value: unknown) => ({
       content: [{ type: 'text', text: JSON.stringify(value) }],
@@ -421,13 +484,7 @@ export function Workspace() {
                 !allowed.has(next as View)
               )
                 throw new Error('Invalid workspace view');
-              setView(
-                (next === 'agents'
-                  ? 'compute'
-                  : next === 'deep-dive'
-                    ? 'chat'
-                    : next) as View,
-              );
+              setView(viewFor(next));
               return result({ view: next, localOnly: true });
             },
           },
@@ -460,45 +517,40 @@ export function Workspace() {
       /* WebMCP is optional and browser support is not assumed. */
     }
     return () => controller.abort();
-  }, []);
+  }, [workspaceName]);
   const notify = (message: string) => setToast(message);
-  const navigate = (next: string) => {
-    setView(
-      (next === 'agents'
-        ? 'compute'
-        : next === 'deep-dive'
-          ? 'chat'
-          : next) as View,
-    );
-  };
-  const results = Object.entries(messagesByRoom)
-    .filter(([room]) => !room.startsWith('thread:'))
-    .flatMap(([room, items]) => items.map((message) => ({ ...message, room })))
-    .filter(
-      (message) =>
-        !search.trim() ||
-        `${message.name} ${plainText(message.body)}`
-          .toLowerCase()
-          .includes(search.toLowerCase()),
-    )
-    .slice(-100)
-    .reverse();
+  const navigate = (next: string) => setView(viewFor(next));
+  const [results, setResults] = useState<(Message & { room: string; conversation: string; parent: MessageRecord | null })[]>([]);
+  useEffect(() => {
+    if (!searchOpen) return;
+    const q = search.trim();
+    if (!q) return;
+    let live = true;
+    const timer = setTimeout(() => {
+      buzz.search(q).then(found => { if (live) setResults(found.map(record => ({ ...toMessage(record, members), room: record.room, conversation: record.conversation, parent: record.parent }))); }).catch(() => { if (live) setResults([]); });
+    }, 250);
+    return () => { live = false; clearTimeout(timer); };
+  }, [search, searchOpen, members]);
+  async function hideRoom(room:string){
+    try{await buzz.setConversationHidden(room,true);if(channel===room){const next=channels.find(name=>name!==room&&!hiddenRooms.includes(name));if(next)openRoom(next);else{setChannel('');setDm(null);setView('inbox');}}}
+    catch(error){notify(error instanceof Error?error.message:'Could not close conversation.');}
+  }
+  const markRead=(room:string)=>setLastRead(all=>({...all,[room]:latestInRoom(room)||new Date().toISOString()}));
   function openRoom(name: string) {
     const member = members.find(
       (person) => person.id === name || person.name === name,
     );
     const room = member ? `dm:${member.id}` : name;
+    if(hiddenRooms.includes(room))void buzz.setConversationHidden(room,false).catch(error=>notify(error.message));
     setThread(null);
     setMemberProfile(null);
     setChannel(room);
     setDm(member?.id ?? null);
 
-    setDraft('');
-    setMentionedIds([]);
     setTab('messages');
     setView('chat');
   }
-  function retryMessage(message: Message, _room?: string) {
+  function retryMessage(message: Message) {
     if (!message.runId) return notify('No recorded run to retry.');
     void buzz
       .retryRun(message.runId)
@@ -510,45 +562,68 @@ export function Workspace() {
         ),
       );
   }
-  function send() {
-    const text = draft.trim();
-    if (!text || !channel) return;
-    if (!sharedLoaded) return notify('The shared workspace is still connecting. Try again shortly.');
-    const room = channel;
-    setDraft('');
-    setMentionedIds([]);
-    void buzz
-      .sendMessage(room, text, crypto.randomUUID(), runModes[room] ?? 'quick')
-      .catch((error: unknown) => {
-        if (currentRef.current.channel === room)
-          setDraft((value) => value || text);
-        notify(
-          error instanceof Error
-            ? error.message
-            : 'Message not sent. Try again.',
-        );
-      });
+  function executeCommand(text: string, room: string, clear: () => void) {
+    const parsed = parseCommand(text);
+    if (!parsed) return false;
+    const { name, args } = parsed;
+    if (name === 'model') {
+      if (args.toLowerCase() === 'connect') { navigate('compute'); openModels(); }
+      else navigate('compute');
+    } else if (name === 'help') setCommandRequest(current=>({id:(current?.id??0)+1,kind:'help',args}));
+    else if (['connect', 'integrations'].includes(name)) { navigate('compute'); openModels(); }
+    else if (name === 'googledrive') { navigate('data'); openGoogleDrive(args); }
+    else if (name === 'task' || name === 'goal') {
+      setRunModes(all=>({...all,[room]:'task'}));writeDraft(room,args);return true;
+    }
+    else if (name === 'quickstart') setQuickstartOpen(true);
+    else if (name === 'run') {
+      if (!args) { notify('Usage: /run <shell command>. Example: /run pwd'); return true; }
+      void terminalAction({ command: args, requestId: crypto.randomUUID() }).then(() => { clear(); navigate('terminal'); }).catch(error => notify(error.message));
+      return true;
+    } else if (name === 'terminal') navigate('terminal');
+    else if (name === 'models') navigate('compute');
+    else if (name === 'team') navigate('settings');
+    else if (name === 'search') { setSearch(args); setSearchOpen(true); }
+    else if (name === 'stop') {
+      const run = [...runs].reverse().find(run => run.room === room && ['queued', 'preparing', 'running', 'awaiting'].includes(run.status));
+      if (run) void buzz.cancelRun(run.id).catch(error => notify(error.message)); else notify('No active run in this conversation.');
+    } else { notify(`Unknown command /${name}. Open /help to see commands and examples.`); setCommandRequest(current=>({id:(current?.id??0)+1,kind:'help',args:''})); return true; }
+    clear(); return true;
   }
-  const activeThreadId = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    activeThreadId.current = thread?.id;
-  }, [thread?.id]);
-  function sendThread() {
-    const text = threadReply.trim();
-    if (!text || !thread) return;
-    if (!sharedLoaded) return notify('The shared workspace is still connecting. Try again shortly.');
-    const threadId = thread.id;
-    setThreadReply('');
-    void buzz
-      .sendMessage(`thread:${threadId}`, text, crypto.randomUUID(), runModes[`thread:${threadId}`] ?? 'quick')
-      .catch((error: unknown) => {
-        if (activeThreadId.current === threadId)
-          setThreadReply((value) => value || text);
-        notify(
-          error instanceof Error ? error.message : 'Reply not sent. Try again.',
-        );
-      });
+  async function sendToRoom(room:string) {
+    const text=(drafts[room] || '').trim();
+    if(!text || !room || taskSendingRef.current.has(room))return;
+    if(executeCommand(text,room,()=>writeDraft(room,'')))return;
+    if(!sharedLoaded || !tasksLoaded)return notify('The shared workspace is still connecting. Try again shortly.');
+    const existing=tasks.find(task=>task.room===room);
+    const mode=runModes[room] ?? 'quick';
+    if(existing || mode==='task') {
+      if(taskActive(existing))return notify('Stop the current task before sending another instruction.');
+      const options=taskDrafts[room] || {};
+      const agentId=existing?.agentId || options.agentId || (taskAgents.length===1?taskAgents[0].id:'');
+      if(!agentId)return notify('Choose an agent for this task.');
+      taskSendingRef.current.add(room);setTaskSending(all=>({...all,[room]:true}));
+      try {
+        const data=await call<{task:AgentTask}>('/api/tasks',{method:'POST',body:JSON.stringify(existing ? {action:'continue',id:existing.id,instruction:text} : {...options,action:'create',agentId,room,goal:text})});
+        writeDraft(room,value=>value.trim()===text?'':value);
+        setTaskDrafts(all=>({...all,[room]:{}}));setRunModes(all=>({...all,[room]:'quick'}));
+        await reloadTasks();
+        if(!room.startsWith('thread:') && currentRef.current.channel===room && currentRef.current.view==='chat') {
+          const response=await call<{messages:MessageRecord[]}>(`/api/messages?room=${encodeURIComponent(room)}&id=${encodeURIComponent(data.task.room.slice(7))}`,{});
+          if(response.messages[0])openThread(toMessage(response.messages[0],members));
+        }
+      }catch(error){notify(error instanceof Error?error.message:'Could not send task.');}
+      finally{taskSendingRef.current.delete(room);setTaskSending(all=>({...all,[room]:false}));}
+      return;
+    }
+    writeDraft(room,'');
+    void buzz.sendMessage(room,text,crypto.randomUUID(),mode).catch((error:unknown)=>{
+      writeDraft(room,value=>value || text);
+      notify(error instanceof Error?error.message:'Message not sent. Try again.');
+    });
   }
+  const send=()=>void sendToRoom(channel);
+  const sendThread=()=>void sendToRoom(threadRoom);
   async function decideApproval(decision: 'Approved' | 'Rejected') {
     if (!activeApproval || approvalBusy || !approvalActionable) return;
     setApprovalBusy(true);
@@ -562,23 +637,6 @@ export function Workspace() {
     } finally {
       setApprovalBusy(false);
     }
-  }
-  async function addChannel(e: SyntheticEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const name = channelName.trim().toLowerCase().replace(/\s+/g, '-');
-    if (!name) return;
-    try {
-      await buzz.createChannel(name);
-    } catch (error) {
-      notify(error instanceof Error ? error.message : 'Could not create channel.');
-      return;
-    }
-
-    setDm(null);
-    setChannel(name);
-    setChannelName('');
-    setNewChannel(false);
-    setView('chat');
   }
   const nav = (
     icon: ReactNode,
@@ -601,30 +659,31 @@ export function Workspace() {
   return (
     <SidebarProvider
       defaultOpen
-      className={`relay-shell ${preferences[1] ? 'compact' : ''}`}
+      className={`relay-shell ${preferences.compact ? 'compact' : ''}`}
     >
-      {preferences[1] && (
+      {preferences.compact && (
         <style>{`.relay-shell.compact .message-row{padding-top:6px;padding-bottom:6px}.relay-shell.compact .message-body p{line-height:1.35}.relay-shell.compact .avatar{width:30px;height:30px}`}</style>
       )}
+      <ModelPanel />
+      <CommandPanel request={commandRequest} onClose={() => setCommandRequest(null)} />
+      <Quickstart open={quickstartOpen} onClose={closeQuickstart} onNavigate={navigate} onChat={id => { openRoom(id); writeDraft(`dm:${id}`, 'What can you help our team with?'); }} />
       <Sidebar className="relay-sidebar" collapsible="offcanvas">
         <SidebarHeader className="rail-header">
           <div className="brand">
-            <span className="brand-symbol">
-              <Zap size={19} />
-            </span>
+            <Image className="brand-symbol" src="/shoal.svg" width={28} height={28} alt="" />
             Shoal<span className="brand-period">.</span>
             <span className="brand-version">PREVIEW</span>
           </div>
           <button
             className="workspace-switch"
-            onClick={() => setProfileOpen(true)}
+            onClick={() => navigate('settings')}
+            aria-label="Workspace settings"
           >
-            <span className="workspace-avatar">M</span>
+            <span className="workspace-avatar">{workspaceName.slice(0, 1).toUpperCase()}</span>
             <span>
               <strong>{workspaceName}</strong>
               <small>Workspace</small>
             </span>
-            <ChevronDown size={15} />
           </button>
         </SidebarHeader>
         <NavigationContent>
@@ -636,22 +695,24 @@ export function Workspace() {
           <SidebarMenu>
             {nav(<Inbox size={17} />, 'Inbox', 'inbox')}
             {nav(<Database size={17} />, 'Data', 'data')}
-            {nav(<Cpu size={17} />, 'Habitats', 'compute')}
+            {nav(<SeaweedIcon size={17} />, 'Habitats', 'compute')}
+            {nav(<Code size={17} />, 'Terminal', 'terminal')}
           </SidebarMenu>
           <div className="rail-section-label">
-            <span>CHANNELS</span>
-            <button
+            <button className="channel-browser-trigger" aria-label="Browse channels" onClick={()=>setBrowsingChannels(true)}>CHANNELS</button>
+            {user&&isAdmin(user)&&<button
               className="icon-btn"
               aria-label="New channel"
               onClick={() => setNewChannel(true)}
             >
               <Plus size={15} />
-            </button>
+            </button>}
           </div>
           <SidebarMenu>
-            {channels.map((name) => (
+            {channels.filter(name=>!hiddenRooms.includes(name)).map((name) => (
               <SidebarMenuItem key={name}>
-                <SidebarMenuButton
+                <ConversationMenu items={[{label:'Channel settings',onClick:()=>setEditingChannel(name)},...(user&&isAdmin(user)?[{label:'Rename channel',onClick:()=>setRenamingChannel(name)}]:[]),{label:'Mark as read',onClick:()=>markRead(name)},{label:'Leave channel',onClick:()=>void hideRoom(name),danger:true}]}><SidebarMenuButton
+                  aria-label={channelLabel(name)}
                   className="rail-link"
                   data-active={view === 'chat' && channel === name}
                   onClick={() => {
@@ -659,8 +720,9 @@ export function Workspace() {
                   }}
                 >
                   <Hash size={16} />
-                  <span>{name}</span>
-                </SidebarMenuButton>
+                  <span data-unread={unreadCount(name) > 0 || undefined}>{channelLabel(name)}</span>
+                  {unreadCount(name) > 0 && <span className="nav-count">{unreadCount(name)}</span>}
+                </SidebarMenuButton></ConversationMenu>
               </SidebarMenuItem>
             ))}
           </SidebarMenu>
@@ -668,7 +730,6 @@ export function Workspace() {
             <span>WORKSPACE</span>
           </div>
           <SidebarMenu>
-            {nav(<Users size={16} />, 'Huddles', 'huddles')}
             {nav(<Settings size={16} />, 'Settings', 'settings')}
           </SidebarMenu>
           <div className="rail-section-label">
@@ -683,57 +744,24 @@ export function Workspace() {
           </div>
           <SidebarMenu>
             {members
-              .filter((member) => member.id !== 'you')
+              .filter((member) => member.id !== currentUserId && !hiddenRooms.includes(`dm:${member.id}`))
               .map((p) => (
                 <SidebarMenuItem key={p.id}>
-                  <SidebarMenuButton
+                  <ConversationMenu items={[{label:'View profile',onClick:()=>{openRoom(p.id);openProfile(p);}},{label:'Mark as read',onClick:()=>markRead(`dm:${p.id}`)},{label:'Close conversation',onClick:()=>void hideRoom(`dm:${p.id}`)}]}><SidebarMenuButton
+                    aria-label={p.name}
                     className="rail-link"
                     data-active={view === 'chat' && dm === p.id}
                     onClick={() => openRoom(p.id)}
                   >
                     <MemberAvatar member={p} size={24} />
-                    <span>{p.name.split(' ')[0]}</span>
-                    <span className="rail-dot" />
-                  </SidebarMenuButton>
+                    <span data-unread={unreadCount(`dm:${p.id}`) > 0 || undefined}>{p.name}</span>
+                    {unreadCount(`dm:${p.id}`) > 0 && <span className="nav-count">{unreadCount(`dm:${p.id}`)}</span>}
+                  </SidebarMenuButton></ConversationMenu>
                 </SidebarMenuItem>
               ))}
           </SidebarMenu>
         </NavigationContent>
-        <SidebarFooter className="rail-footer">
-          <button className="compute-mini" onClick={() => navigate('compute')}>
-            <Cpu size={17} className="compute-chip" />
-            <span>
-              <strong>Dell GB10</strong>
-              <small>
-                <span className="status-dot" />{' '}
-                {homes.find((home) => home.id === 'lab')?.status === 'connected'
-                  ? 'Connected'
-                  : 'Setting up'}
-              </small>
-            </span>
-          </button>
-          <div className="rail-profile">
-            <button onClick={() => setProfileOpen(true)}>
-              <MemberAvatar
-                member={members.find((m) => m.id === 'you')}
-                size={24}
-              />
-              <span>
-                <strong>Your profile</strong>
-                <small>Local</small>
-              </span>
-            </button>
-            <button
-              className="icon-btn"
-              aria-label="Help"
-              onClick={() =>
-                notify('Use @ to mention a member, or open a direct message.')
-              }
-            >
-              <CircleHelp size={16} />
-            </button>
-          </div>
-        </SidebarFooter>
+
       </Sidebar>
       <main
         className={`workspace-main ${view === 'chat' && (thread || memberProfile) ? 'workspace-has-panel' : ''}`}
@@ -747,7 +775,7 @@ export function Workspace() {
             <SidebarTrigger className="mobile-menu" />
             <strong>
               {view === 'chat'
-                ? `${dm ? '@' : '#'} ${channel}`
+                ? `${dm ? '@' : '#'} ${dm ? members.find(member=>member.id===dm)?.name || channel : channelLabel(channel)}`
                 : view === 'compute'
                   ? 'Habitats'
                   : view[0].toUpperCase() + view.slice(1)}
@@ -762,18 +790,9 @@ export function Workspace() {
               onClick={() => navigate('inbox')}
             >
               <AtSign size={17} />
-              <span className="notification-dot" />
+              {approvals.some((item) => item.status === 'Pending') && <span className="notification-count">{approvals.filter(item => item.status === 'Pending').length}</span>}
             </button>
-            <button
-              className="top-profile"
-              onClick={() => setProfileOpen(true)}
-              aria-label="Open profile"
-            >
-              <MemberAvatar
-                member={members.find((m) => m.id === 'you')}
-                size={26}
-              />
-            </button>
+
           </div>
         </header>
         <div
@@ -782,58 +801,47 @@ export function Workspace() {
         >
           <Chat
             room={channel}
+            tasks={tasks}
+            taskOptions={taskOptions(channel)}
+            taskSending={!!taskSending[channel]}
+            taskAvailable={user?.role!=='viewer' && taskAgents.length>0}
             runMode={runModes[channel] ?? 'quick'}
             setRunMode={mode => setRunModes(current => ({...current, [channel]: mode}))}
             channel={
-              members.find((member) => member.id === dm)?.name ?? channel
+              members.find((member) => member.id === dm)?.name ?? channelLabel(channel)
             }
             members={members}
-            onMention={(id) =>
-              setMentionedIds((ids) => (ids.includes(id) ? ids : [...ids, id]))
-            }
+            currentUserId={currentUserId}
+            mention={mention}
             retry={retryMessage}
+            stop={id => { const message = messages.find(message => message.id === id); if (message?.runId) void buzz.cancelRun(message.runId).catch(error => notify(error.message)); }}
             openMember={openProfile}
             dm={!!dm}
             recipient={members.find((member) => member.id === dm)}
-            approval={approval}
             reviewDraft={(id) => { setSelectedApprovalId(id ?? null); setApprovalOpen(true); }}
-            invite={() => setPeopleOpen(true)}
-            reactionCounts={reactionCounts}
-            react={(id) =>
-              setReactionCounts((all) => ({ ...all, [id]: (all[id] || 0) + 1 }))
-            }
-            replies={Object.fromEntries(
-              messages.map((message) => [
-                message.id,
-                [
-                  ...(replies[message.id] ?? []),
-                  ...(messagesByRoom[`thread:${message.id}`] ?? []).map(
-                    (reply) => plainText(reply.body),
-                  ),
-                ],
-              ]),
-            )}
+            invite={() => setEditingChannel(channel)}
+            replyCounts={Object.fromEntries(messages.map((message) => [message.id, messagesByRoom[`thread:${message.id}`]?.length ?? 0]))}
             tab={tab}
             setTab={setTab}
             messages={messages}
             draft={draft}
             setDraft={setDraft}
             send={send}
-            starred={starred}
-            setStarred={setStarred}
             setThread={openThread}
             canvas={canvas}
             setCanvas={setCanvas}
-            navigate={navigate}
             notify={notify}
           />
         </div>
         <View
           view={view}
-          navigate={navigate}
           notify={notify}
           preferences={preferences}
           setPreferences={setPreferences}
+          inboxRead={inboxRead}
+          lastRead={lastRead}
+          setLastRead={setLastRead}
+          setInboxRead={setInboxRead}
           reviewDraft={(id) => { setSelectedApprovalId(id ?? null); setApprovalOpen(true); }}
           openRoom={(room, threadId) => { openRoom(room); if (threadId) { const parent = Object.values(messagesByRoom).flat().find(message => message.id === threadId); if (parent) openThread(parent); } }}
         />
@@ -919,10 +927,7 @@ export function Workspace() {
                     />
                     <div>
                       <div className="message-meta">
-                        <strong>
-                          {resolveMember(members, thread.memberId, thread.name)
-                            ?.name ?? thread.name}
-                        </strong>
+                        <strong>{thread.name}</strong>
                         <MemberClearance
                           member={resolveMember(
                             members,
@@ -933,31 +938,14 @@ export function Workspace() {
                         <time>{thread.time}</time>
                       </div>
                       <div className="message-text">
-                        {typeof thread.body === 'string'
-                          ? messageText(thread.body)
-                          : thread.body}
+                        <MessageBody text={thread.body} mention={mention} />
                       </div>
                     </div>
                   </div>
+                  <HistoryButton room={`thread:${thread.id}`} firstId={threadMessages[0]?.id} />
                   <div className="thread-reply-divider">
-                    {(replies[thread.id]?.length ?? 0) +
-                      threadMessages.length}{' '}
-                    replies
+                    {threadMessages.length} {threadMessages.length === 1 ? 'reply' : 'replies'}
                   </div>
-                  {(replies[thread.id] ?? []).map((reply, index) => (
-                    <div className="thread-message" key={`old-${index}`}>
-                      <MemberAvatar
-                        member={members.find((m) => m.id === 'you')}
-                        size={36}
-                      />
-                      <div>
-                        <div className="message-meta">
-                          <strong>You</strong>
-                        </div>
-                        <div className="message-text">{reply}</div>
-                      </div>
-                    </div>
-                  ))}
                   {threadMessages.map((reply) => (
                     <div className="thread-message" key={reply.id}>
                       <DeepDiveAvatar
@@ -969,10 +957,7 @@ export function Workspace() {
                       />
                       <div>
                         <div className="message-meta">
-                          <strong>
-                            {resolveMember(members, reply.memberId, reply.name)
-                              ?.name ?? reply.name}
-                          </strong>
+                          <strong>{reply.name}</strong>
                           <MemberClearance
                             member={resolveMember(
                               members,
@@ -983,22 +968,18 @@ export function Workspace() {
                           <time>{reply.time}</time>
                         </div>
                         <div className="message-text">
-                          {typeof reply.body === 'string'
-                            ? messageText(reply.body)
-                            : reply.body}
+                          <MessageBody text={reply.body} mention={mention} />
                         </div>
                         {reply.requestState === 'pending' && (
                           <output className="message-request-state">
-                            Responding…{' '}
+                            Responding{' '}
                           </output>
                         )}
                         {reply.requestState === 'error' && (
                           <div className="message-request-state" role="alert">
                             {reply.error}
                             <button
-                              onClick={() =>
-                                retryMessage(reply, `thread:${thread.id}`)
-                              }
+                              onClick={() => retryMessage(reply)}
                             >
                               Retry
                             </button>
@@ -1008,16 +989,17 @@ export function Workspace() {
                     </div>
                   ))}
                 </div>
-                <ChatDeepDiveActivity room={`thread:${thread.id}`} />
+                <>{threadTask ? <ChatTaskActivity key={threadTask.id} task={threadTask} onUpdated={reloadTasks}/> : <ChatDeepDiveActivity room={threadRoom}/>}</>
                 <div className="thread-composer composer">
+                  {!threadTask && taskOptions(threadRoom)}
                   <LiveComposer
                     ref={threadComposerRef}
                     value={threadReply}
                     onChange={setThreadReply}
                     onSend={sendThread}
-                    members={members}
-                    onMention={() => {}}
-                    placeholder="Reply in thread…"
+                    members={members.filter(member=>member.kind!=='agent'||(dm ? member.id===dm : sharedMembers.some(record=>record.id===member.id && agentCanAccessChannel(record,channelDetails?.find(item=>item.name===channel)||{name:channel,level:'Internal',agents:null},privacyLayers))))}
+                    currentUserId={currentUserId}
+                    placeholder={threadTask ? "Continue this task" : runModes[threadRoom]==='task' ? "Describe the task" : "Reply in thread"}
                   />
                   <div className="composer-bottom">
                     <div>
@@ -1030,20 +1012,12 @@ export function Workspace() {
                       >
                         <AtSign size={16} />
                       </button>
-                      <button
-                        className="icon-btn"
-                        aria-label="Add emoji to reply"
-                        onClick={() =>
-                          threadComposerRef.current?.insertText(' 🙂')
-                        }
-                      >
-                        <Smile size={16} />
-                      </button>
-                      <ChatDeepDiveControl mode={runModes[`thread:${thread.id}`] ?? 'quick'} onChange={mode => setRunModes(current => ({...current, [`thread:${thread.id}`]: mode}))} />
+                      <EmojiPicker label="Add emoji to reply" onSelect={emoji => threadComposerRef.current?.insertText(emoji)} focusAfterSelect={threadComposerRef} />
+                      <>{threadTask ? <span className="chat-task-reply-label">Task reply</span> : <ChatDeepDiveControl mode={runModes[threadRoom] ?? 'quick'} onChange={mode => setRunModes(current => ({...current, [threadRoom]: mode}))} taskAvailable={user?.role!=='viewer' && taskAgents.length>0} disabled={!!taskSending[threadRoom]}/>}</>
                     </div>
                     <button
                       className="send-button"
-                      disabled={!threadReply.trim()}
+                      disabled={!threadReply.trim() || !!taskSending[threadRoom] || taskActive(threadTask)}
                       aria-label="Send reply"
                       onClick={sendThread}
                     >
@@ -1070,7 +1044,7 @@ export function Workspace() {
                           <dt>Home</dt>
                           <dd>
                             {memberProfile.runtime === 'local'
-                              ? 'Dell GB10'
+                              ? memberProfile.device
                               : 'Cloud'}
                           </dd>
                         </div>
@@ -1123,21 +1097,22 @@ export function Workspace() {
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search messages…"
+              placeholder="Search messages"
+              aria-label="Search messages"
             />
             <kbd>ESC</kbd>
           </div>
           <div className="search-results">
-            {results.length === 0 && (
-              <p className="search-empty">No messages found.</p>
+            {(!search.trim() || results.length === 0) && (
+              <p className="search-empty">{search.trim() ? 'No messages found.' : 'Type to search messages.'}</p>
             )}
-            {results.map((m) => (
+            {(search.trim() ? results : []).map((m) => (
               <button
                 key={`${m.room}-${m.id}`}
                 onClick={() => {
                   setSearchOpen(false);
-                  openRoom(m.room.startsWith('dm:') ? m.room.slice(3) : m.room);
-                  openThread(m);
+                  openRoom(m.conversation.startsWith('dm:') ? m.conversation.slice(3) : m.conversation);
+                  openThread(m.parent ? toMessage(m.parent, members) : m);
                 }}
               >
                 <MemberAvatar
@@ -1148,15 +1123,14 @@ export function Workspace() {
                 />
                 <span>
                   <strong>
-                    {m.name}:{' '}
-                    {typeof m.body === 'string' ? m.body : 'Launch room update'}
+                    {m.name}: {m.body}
                   </strong>
                   <small>
                     {m.room.startsWith('dm:')
                       ? (members.find((person) => person.id === m.room.slice(3))
                           ?.name ?? 'Direct message')
-                      : `#${m.room}`}{' '}
-                    · {m.time}
+                      : `#${channelLabel(m.conversation)}`}{' '}
+                    / {m.time}
                   </small>
                 </span>
                 <ChevronRight size={15} />
@@ -1173,8 +1147,9 @@ export function Workspace() {
               Choose a conversation.
             </DialogDescription>
           </DialogHeader>
+          {user && isAdmin(user) && <button className="btn btn-primary" onClick={()=>{setPeopleOpen(false);navigate('settings');}}>Invite people & manage team</button>}
           {members
-            .filter((person) => person.id !== 'you')
+            .filter((person) => person.id !== currentUserId)
             .map((person) => (
               <button
                 className="list-row"
@@ -1197,7 +1172,7 @@ export function Workspace() {
             <DialogTitle>{activeApproval?.title ?? 'Review'}</DialogTitle>
             <DialogDescription>
               {activeApproval
-                ? `${activeApproval.agent} · ${activeApproval.level}`
+                ? `${activeApproval.agent} / ${activeApproval.level}`
                 : 'No pending review'}
             </DialogDescription>
           </DialogHeader>
@@ -1237,59 +1212,9 @@ export function Workspace() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <Dialog open={newChannel} onOpenChange={setNewChannel}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Create a channel</DialogTitle>
-            <DialogDescription className="sr-only">
-              Name your channel.
-            </DialogDescription>
-          </DialogHeader>
-          <form onSubmit={addChannel}>
-            <label className="field">
-              <span className="field-label">Channel name</span>
-              <input
-                className="input"
-                value={channelName}
-                onChange={(e) => setChannelName(e.target.value)}
-                placeholder="e.g. product-launch"
-              />
-            </label>
-            <DialogFooter>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => setNewChannel(false)}
-              >
-                Cancel
-              </button>
-              <button className="btn btn-primary" type="submit">
-                Create channel
-              </button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-      <Dialog open={profileOpen} onOpenChange={setProfileOpen}>
-        <DialogContent>
-          <div className="profile-preview">
-            <MemberAvatar
-              member={members.find((m) => m.id === 'you')}
-              size={64}
-            />
-            <DialogTitle>Your profile</DialogTitle>
-            <p className="muted">{workspaceName} workspace</p>
-          </div>
-          <DialogFooter>
-            <button
-              className="btn btn-secondary"
-              onClick={() => setProfileOpen(false)}
-            >
-              Close
-            </button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {browsingChannels&&<ChannelBrowser onClose={()=>setBrowsingChannels(false)} onOpen={name=>{openRoom(name);setBrowsingChannels(false);}}/>}
+      {renamingChannel&&<RenameChannel room={renamingChannel} onClose={()=>setRenamingChannel(null)}/>}
+      {(newChannel||!!editingChannel)&&<ChannelDialog open={newChannel||!!editingChannel} channel={editingChannel||undefined} onClose={()=>{setNewChannel(false);setEditingChannel(null);}} onSaved={name=>{if(newChannel){openRoom(name);setView('chat');}notify(newChannel?'Channel created.':'Channel saved.');}}/>}
       {toast && (
         <div className="relay-toast">
           <CheckCircle2 size={17} />
@@ -1311,19 +1236,21 @@ function Chat({
   room,
   runMode,
   setRunMode,
+  tasks,
+  taskOptions,
+  taskSending,
+  taskAvailable,
   members,
-  onMention,
+  currentUserId,
+  mention,
   retry,
   stop,
   openMember,
   recipient,
   dm,
-  approval,
   reviewDraft,
   invite,
-  reactionCounts,
-  react,
-  replies,
+  replyCounts,
   channel,
   tab,
   setTab,
@@ -1331,30 +1258,29 @@ function Chat({
   draft,
   setDraft,
   send,
-  starred,
-  setStarred,
   setThread,
   canvas,
   setCanvas,
-  navigate,
   notify,
 }: {
   room: string;
-  runMode: RunMode;
-  setRunMode: (mode: RunMode) => void;
+  runMode: ChatMode;
+  setRunMode: (mode: ChatMode) => void;
+  tasks: AgentTask[];
+  taskOptions: ReactNode;
+  taskSending: boolean;
+  taskAvailable: boolean;
   recipient?: WorkspaceMember;
   members: readonly WorkspaceMember[];
-  onMention: (id: string) => void;
+  currentUserId: string;
+  mention: RegExp;
   retry: (message: Message) => void;
-  stop?: (id: string) => void;
+  stop: (id: string) => void;
   openMember: (member: WorkspaceMember) => void;
   dm: boolean;
-  approval: string;
   reviewDraft: (id?: string) => void;
   invite: () => void;
-  reactionCounts: Record<string, number>;
-  react: (id: string) => void;
-  replies: Record<string, string[]>;
+  replyCounts: Record<string, number>;
   channel: string;
   tab: string;
   setTab: (value: string) => void;
@@ -1362,30 +1288,31 @@ function Chat({
   draft: string;
   setDraft: (value: string) => void;
   send: () => void;
-  starred: boolean;
-  setStarred: (value: boolean) => void;
   setThread: (message: Message) => void;
   canvas: string;
   setCanvas: (value: string) => void;
-  navigate: (value: string) => void;
   notify: (message: string) => void;
 }) {
-  const { documents, approvals } = useBuzz();
-  const roomAgents = members.filter(member => member.kind === 'agent'
-    && (member.id === recipient?.id || messages.some(message => message.memberId === member.id)));
-  const roomDocuments = documents.filter(document => messages.some(message => message.attachment?.name === document.name));
+  const { documents, approvals,channelDetails=[],privacyLayers=DEFAULT_LAYERS,members:records } = useBuzz();
+  const settings=channelDetails.find(item=>item.name===room);
+  const roomAgents=members.filter(member=>member.kind==='agent' && (dm ? member.id===recipient?.id : records.some(record=>record.id===member.id && agentCanAccessChannel(record,settings||{name:room,level:'Internal',agents:null},privacyLayers))));
+  const roomDocuments = documents.filter(document => document.sourceRoom===room);
   const messageApproval = (message: Message) => message.runId ? approvals.find(item => item.runId === message.runId && item.status === 'Pending'
     && !item.receipt && (!item.expiresAt || Date.parse(item.expiresAt) > Date.now())) : undefined;
   const [contextOpen, setContextOpen] = useState(false);
-  const [composerMenu, setComposerMenu] = useState(false);
+  const showContext = !dm && contextOpen;
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<ComposerHandle>(null);
   const followingMessages = useRef(true);
+  useEffect(()=>{if(dm&&tab==='canvas')setTab('messages');},[dm,tab,setTab]);
   useEffect(() => {
-    followingMessages.current = true;
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [channel, tab]);
+    let saved=null;
+    try {saved=sessionStorage.getItem(`shoal-scroll:${currentUserId}:${room}:${tab}`);}catch{}
+    followingMessages.current = saved===null;
+    if(el)el.scrollTop=saved===null ? el.scrollHeight : Number(saved);
+    if(el)followingMessages.current=el.scrollHeight-el.scrollTop-el.clientHeight<80;
+  }, [room,tab,currentUserId]);
   useEffect(() => {
     const element = scrollRef.current;
     if (element && followingMessages.current)
@@ -1406,7 +1333,7 @@ function Chat({
     <section className="chat-page">
       <ChatHeader
         title={channel}
-        onTitleClick={recipient ? () => openMember(recipient) : undefined}
+        onTitleClick={recipient ? () => openMember(recipient) : invite}
         leadingContent={
           <>
             <SidebarTrigger className="mobile-menu" />
@@ -1423,44 +1350,37 @@ function Chat({
             )}
           </>
         }
-        titleAdornment={
-          <button
-            className={`icon-btn star-button ${starred ? 'starred' : ''}`}
-            aria-label={dm ? 'Star conversation' : 'Star channel'}
-            onClick={() => setStarred(!starred)}
-          >
-            <Star size={15} fill={starred ? 'currentColor' : 'none'} />
-          </button>
-        }
         actions={
           <div className="channel-actions">
             {!dm && (
               <div className="member-stack">
-                {members.slice(0, 3).map((p) => (
+                {roomAgents.slice(0, 3).map((p) => (
                   <MemberAvatar key={p.id} member={p} size={24} />
                 ))}
-                <span className="member-number">{members.length}</span>
+                <span className="member-number">{roomAgents.length}</span>
               </div>
             )}
             {!dm && (
               <button
-                className="btn btn-secondary desktop-only"
+                className="icon-btn"
+                aria-label="Channel settings" title="Channel settings"
                 onClick={invite}
               >
-                <Users size={15} /> People
+                <Settings size={20} />
               </button>
             )}
-            <button
+            {!dm && <button
               className="icon-btn"
               aria-label="Toggle room context"
-              aria-expanded={contextOpen}
+              aria-expanded={showContext}
               onClick={() => setContextOpen(!contextOpen)}
             >
-              <MoreHorizontal size={18} />
-            </button>
+              <PanelRight size={22} />
+            </button>}
           </div>
         }
       />
+      {!dm&&settings?.topic&&<p className="channel-topic">{settings.topic}</p>}
       <div className="channel-tab-row">
         <Tabs value={tab} onValueChange={setTab}>
           <TabsList className="channel-tabs">
@@ -1468,10 +1388,10 @@ function Chat({
               <MessageCircle size={14} />
               Messages
             </TabsTrigger>
-            <TabsTrigger value="canvas">
+            {!dm && <TabsTrigger value="canvas">
               <FileText size={14} />
               Canvas
-            </TabsTrigger>
+            </TabsTrigger>}
             <TabsTrigger value="files">
               <Archive size={14} />
               Files
@@ -1481,9 +1401,9 @@ function Chat({
       </div>
       {tab === 'messages' ? (
         <div
-          className={`conversation-layout ${contextOpen ? 'context-open' : ''}`}
+          className={`conversation-layout ${showContext ? 'context-open' : ''}`}
           style={{
-            gridTemplateColumns: contextOpen ? undefined : 'minmax(0, 1fr)',
+            gridTemplateColumns: showContext ? undefined : 'minmax(0, 1fr)',
           }}
         >
           <div className="conversation">
@@ -1494,8 +1414,14 @@ function Chat({
                 const el = event.currentTarget;
                 followingMessages.current =
                   el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+                try {sessionStorage.setItem(`shoal-scroll:${currentUserId}:${room}:${tab}`,String(el.scrollTop));}catch{}
               }}
             >
+              <HistoryButton room={room} firstId={messages[0]?.id} beforeLoad={() => {
+                const element = scrollRef.current, height = element?.scrollHeight ?? 0, top = element?.scrollTop ?? 0;
+                followingMessages.current = false;
+                return () => { if (element) element.scrollTop = top + element.scrollHeight - height; };
+              }} />
               {recipient && (
                 <div className="dm-conversation-intro">
                   <button
@@ -1508,11 +1434,11 @@ function Chat({
                   <p>This is your conversation with {recipient.name}.</p>
                 </div>
               )}
-              {messages.length > 0 && <div className="date-divider">Today</div>}
               {messages.map((m, index) => (
+                <Fragment key={m.id}>
+                {dayLabel(m.createdAt) !== dayLabel(messages[index - 1]?.createdAt) && <div className="date-divider">{dayLabel(m.createdAt)}</div>}
                 <article
                   className={`message-row ${messages[index - 1]?.name === m.name && !m.runId ? 'message-grouped' : ''}`}
-                  key={m.id}
                 >
                   <button
                     className="message-avatar-button"
@@ -1543,8 +1469,7 @@ function Chat({
                           if (member) openMember(member);
                         }}
                       >
-                        {members.find((person) => person.id === m.memberId)
-                          ?.name ?? m.name}
+                        {m.name}
                       </button>
                       <MemberClearance
                         member={resolveMember(members, m.memberId, m.name)}
@@ -1552,16 +1477,13 @@ function Chat({
                       <time>{m.time}</time>
                     </div>
                     <div className="message-text">
-                      {typeof m.body === 'string'
-                        ? messageText(m.body)
-                        : m.body}
+                      <MessageBody text={m.body} mention={mention} />
                     </div>
+                    {tasks.filter(task=>task.room===`thread:${m.id}`).map(task=><ChatTaskMessage key={task.id} task={task} onOpen={()=>setThread(m)}/>)}
                     {m.requestState === 'pending' && (
                       <output className="message-request-state">
-                        Responding…{' '}
-                        {stop && (
-                          <button onClick={() => stop(m.id)}>Stop</button>
-                        )}
+                        Responding{' '}
+                        <button onClick={() => stop(m.id)}>Stop</button>
                       </output>
                     )}
                     {m.requestState === 'error' && (
@@ -1576,12 +1498,12 @@ function Chat({
                     {m.attachment && (
                       <button
                         className="chat-attachment"
-                        onClick={() => navigate('data')}
+                        onClick={() => m.attachment?.documentId ? openDataFile(m.attachment.documentId) : notify('This older attachment has no linked file.')}
                       >
                         <FileText size={22} />
                         <span>
                           <strong>{m.attachment.name}</strong>
-                          <small>{m.attachment.detail}</small>
+                          <small>{documents.find(file=>file.id===m.attachment?.documentId)?.level || m.attachment.detail}</small>
                         </span>
                         <ChevronRight size={14} />
                       </button>
@@ -1597,38 +1519,30 @@ function Chat({
                         <span className="badge">{messageApproval(m)?.status}</span>
                       </div>
                     )}
-                    <div className="message-reactions">
-                      {(m.reactions || 0) + (reactionCounts[m.id] || 0) > 0 && (
-                        <button
-                          className="reaction"
-                          onClick={() => react(m.id)}
-                        >
-                          <ThumbsUp size={12} />{' '}
-                          {(m.reactions || 0) + (reactionCounts[m.id] || 0)}
-                        </button>
-                      )}
-                      {(replies[m.id]?.length || 0) > 0 && (
-                        <button
-                          className="reply-action"
-                          onClick={() => setThread(m)}
-                        >
-                          <MessageCircle size={13} />
-                          {replies[m.id]?.length || 0}{' '}
-                          {(replies[m.id]?.length || 0) === 1
-                            ? 'reply'
-                            : 'replies'}
-                        </button>
-                      )}
-                    </div>
+                    {((replyCounts[m.id] || 0) > 0 || Object.keys(m.reactions ?? {}).length > 0) && (
+                      <div className="message-reactions">
+                        {Object.entries(m.reactions ?? {}).map(([emoji, ids]) => (
+                          <button
+                            key={emoji}
+                            className="reaction"
+                            data-mine={ids.includes(currentUserId) || undefined}
+                            aria-label={`${emoji} ${ids.length}`}
+                            onClick={() => buzz.react(m.id, emoji).catch(error => notify(error.message))}
+                          >
+                            {emoji} {ids.length}
+                          </button>
+                        ))}
+                        {(replyCounts[m.id] || 0) > 0 && (
+                          <button className="reply-action" onClick={() => setThread(m)}>
+                            <MessageCircle size={13} />
+                            {replyCounts[m.id]} {replyCounts[m.id] === 1 ? 'reply' : 'replies'}
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <div className="message-tools">
-                    <button
-                      className="icon-btn"
-                      aria-label="React"
-                      onClick={() => react(m.id)}
-                    >
-                      <Smile size={14} />
-                    </button>
+                    <EmojiPicker label="Add reaction" onSelect={emoji => { void buzz.react(m.id, emoji).catch(error => notify(error.message)); }} />
                     <button
                       className="icon-btn"
                       aria-label="Reply"
@@ -1638,50 +1552,26 @@ function Chat({
                     </button>
                   </div>
                 </article>
+                </Fragment>
               ))}
             </div>
             <div className="composer-wrap">
+              {draft.startsWith('/') && <div className="slash-help" aria-label="Slash commands">{commands.filter(item => item.command.startsWith(draft.split(' ')[0].toLowerCase())).map(item => <button key={item.command} onClick={() => setDraft(item.command + ' ')}><code>{item.command}</code><span>{item.description}</span></button>)}</div>}
+
               <ChatDeepDiveActivity room={room} />
               <div className="composer">
+                {taskOptions}
                 <LiveComposer
                   ref={composerRef}
                   value={draft}
                   onChange={setDraft}
                   onSend={send}
-                  members={members}
-                  onMention={onMention}
-                  placeholder={`Message ${dm ? '@' : '#'}${channel}`}
+                  members={members.filter(member=>member.kind!=='agent'||roomAgents.some(agent=>agent.id===member.id))}
+                  currentUserId={currentUserId}
+                  placeholder={runMode==='task' ? 'Describe the task' : `Message ${dm ? '' : '#'}${channel}`}
                 />
                 <div className="composer-bottom">
                   <div>
-                    <button
-                      className="icon-btn"
-                      aria-label="Message actions"
-                      aria-expanded={composerMenu}
-                      onClick={() => setComposerMenu(!composerMenu)}
-                    >
-                      <Plus size={16} />
-                    </button>
-                    {composerMenu && (
-                      <div className="composer-menu">
-                        <button
-                          onClick={() => {
-                            navigate('data');
-                            setComposerMenu(false);
-                          }}
-                        >
-                          <Paperclip size={14} /> Browse files
-                        </button>
-                        <button
-                          onClick={() => {
-                            insertText('`code`');
-                            setComposerMenu(false);
-                          }}
-                        >
-                          <Code size={14} /> Insert code
-                        </button>
-                      </div>
-                    )}
                     <button
                       className="icon-btn"
                       aria-label="Mention teammate"
@@ -1699,24 +1589,17 @@ function Chat({
                     <button
                       className="icon-btn"
                       aria-label="Attach file"
-                      onClick={() => navigate('data')}
+                      onClick={() => openFileUpload(room)}
                     >
                       <Paperclip size={16} />
                     </button>
-                    <button
-                      className="icon-btn"
-                      aria-label="Add emoji"
-                      onClick={() => setDraft(`${draft} 🙂`)}
-                    >
-                      <Smile size={16} />
-                    </button>
-                    <span className="composer-divider" />
-                    <ChatDeepDiveControl mode={runMode} onChange={setRunMode} />
+                    <EmojiPicker label="Add emoji" onSelect={insertText} focusAfterSelect={composerRef} />
+                    <ChatDeepDiveControl mode={runMode} onChange={setRunMode} taskAvailable={taskAvailable} disabled={taskSending}/>
                   </div>
                   <button
                     className="send-button"
                     aria-label="Send message"
-                    disabled={!draft.trim()}
+                    disabled={!draft.trim() || taskSending}
                     onClick={send}
                   >
                     <Send size={15} />
@@ -1725,22 +1608,15 @@ function Chat({
               </div>
             </div>
           </div>
-          {contextOpen && (
+          {showContext && (
             <aside className="context-panel">
               <div className="context-heading">
                 <h2>Room context</h2>
-                <button
-                  className="icon-btn"
-                  aria-label="Context info"
-                  onClick={() => notify('Room details')}
-                >
-                  <Info size={15} />
-                </button>
               </div>
               <div className="context-section">
                 <div className="context-label">
                   <span>AGENTS IN THIS ROOM</span>
-                  <button onClick={() => navigate('agents')}>View all</button>
+                  {!dm && <button onClick={invite}>Edit</button>}
                 </div>
                 {roomAgents.map(agent => <button
                   className="context-agent"
@@ -1753,12 +1629,7 @@ function Chat({
                     <small>{agent.kind === 'agent' ? agent.model : ''}</small>
                   </span>
                 </button>)}
-                <button
-                  className="add-agent-link"
-                  onClick={() => navigate('agents')}
-                >
-                  <Plus size={14} /> Invite an agent
-                </button>
+                {!dm && <button className="add-agent-link" onClick={invite}><Plus size={14}/>Choose agents</button>}
               </div>
               <div className="context-section">
                 <div className="context-label">
@@ -1766,19 +1637,12 @@ function Chat({
                   <button onClick={() => setTab('files')}>See all</button>
                 </div>
                 {roomDocuments.map(document => (
-                  <button className="context-document" key={document.id} onClick={() => setTab('files')}>
+                  <button className="context-document" key={document.id} onClick={() => {openDataFile(document.id);}}>
                     <span className="document-icon"><FileText size={15} /></span>
-                    <span><strong>{document.name}</strong><small><Users size={10} /> {document.collection}</small></span>
+                    <span><strong>{document.name}</strong><small><Users size={10} /> {document.level}</small></span>
                     <ChevronRight size={14} />
                   </button>
                 ))}
-              </div>
-              <div className="context-note">
-                <ShieldCheck size={14} />
-                <p>
-                  Agents can prepare drafts here. People approve external
-                  actions.
-                </p>
               </div>
             </aside>
           )}
@@ -1794,29 +1658,7 @@ function Chat({
           />
         </div>
       ) : (
-        <div className="conversation-scroll">
-          <div className="card shared-file">
-            <div className="card-header">
-              <h2>
-                Files shared in {dm ? '' : '#'}
-                {channel}
-              </h2>
-              <button
-                className="btn btn-secondary"
-                onClick={() => navigate('data')}
-              >
-                <Database size={15} /> Browse Data
-              </button>
-            </div>
-            {roomDocuments.map(document => (
-              <button className="list-row" key={document.id} onClick={() => navigate('data')}>
-                <FileText size={17} />
-                <span><strong>{document.name}</strong><small className="muted">{document.collection} · {document.status}</small></span>
-                <ChevronRight size={16} />
-              </button>
-            ))}
-          </div>
-        </div>
+        <div className="conversation-scroll"><DataView key={room} room={room} onNotify={notify}/></div>
       )}
     </section>
   );
@@ -1825,18 +1667,24 @@ function Chat({
 function View({
   preferences,
   setPreferences,
+  inboxRead,
+  lastRead,
+  setLastRead,
+  setInboxRead,
   reviewDraft,
   openRoom,
   view,
-  navigate,
   notify,
 }: {
-  preferences: boolean[];
-  setPreferences: (value: boolean[]) => void;
+  preferences: Preferences;
+  setPreferences: (value: Preferences) => void;
+  inboxRead: string[];
+  lastRead: Record<string,string>;
+  setLastRead: (update: (current: Record<string,string>) => Record<string,string>) => void;
+  setInboxRead: (update: (current: string[]) => string[]) => void;
   reviewDraft: (id?: string) => void;
   openRoom: (name: string, threadId?: string) => void;
   view: View;
-  navigate: (view: string) => void;
   notify: (message: string) => void;
 }) {
   const hidden = (target: View) => ({
@@ -1851,24 +1699,18 @@ function View({
   });
   return (
     <>
+      {view === 'terminal' && <div {...hidden('terminal')}><TerminalView /></div>}
       <div {...hidden('inbox')}>
-        <InboxView reviewDraft={reviewDraft} openRoom={openRoom} />
+        <InboxView reviewDraft={reviewDraft} openRoom={openRoom} read={inboxRead} setRead={setInboxRead} lastRead={lastRead} setLastRead={setLastRead} />
       </div>
       <div {...hidden('data')}>
         <DataView onNotify={notify} />
       </div>
       <div {...hidden('compute')}>
-        <ComputeView onNotify={notify} />
-      </div>
-      <div {...hidden('huddles')}>
-        <HuddlesView />
+        <AgentsView onNotify={notify} />
       </div>
       <div {...hidden('settings')}>
-        <SettingsView
-          navigate={navigate}
-          preferences={preferences}
-          setPreferences={setPreferences}
-        />
+        {view === 'settings' && <SettingsView preferences={preferences} setPreferences={setPreferences} />}
       </div>
     </>
   );

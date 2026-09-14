@@ -15,6 +15,13 @@ export function registerHandoff(api) {
     // Oversized packets are blocked at handoff instead of silently losing facts.
     packets.set(key, { prompt: event.prompt, at: Date.now() });
   });
+  api.on('model_call_started', (event, ctx) => {
+    const key = keyFor({ ...ctx, sessionKey: event.sessionKey ?? ctx.sessionKey, runId: event.runId });
+    const packet = key && packets.get(key);
+    if (!packet) return;
+    // Use runtime metadata, never a model name written in retrieved content.
+    packet.model = event.provider && event.model ? `${event.provider}/${event.model}` : null;
+  });
   api.on('before_tool_call', (event, ctx) => {
     const key = keyFor(ctx);
     if (!key || event.toolName !== 'sessions_spawn') return;
@@ -25,8 +32,11 @@ export function registerHandoff(api) {
     if (packet.prompt.length > MAX_PACKET_CHARS) return {
       block: true, blockReason: 'The scoped task packet exceeds the 16000-character child budget. Reduce the supplied context before delegating; do not omit the original objective.',
     };
+    if (!packet.model) return {
+      block: true, blockReason: 'The current run has no verified local model selection. Do not delegate to a different or unspecified model.',
+    };
     const task = typeof event.params.task === 'string' ? event.params.task : '';
-    return { params: { ...event.params, task:
+    return { params: { ...event.params, model: packet.model, task:
       `Assigned subtask:\n${task || 'Complete your part of the original objective below.'}\n\n` +
       'The following is the exact current operator request and supplied reference context. ' +
       'Keep its original objective, constraints, requested format, and evidence. ' +
@@ -38,4 +48,5 @@ export function registerHandoff(api) {
   });
 }
 
-export default { id: 'shoal-context-handoff', name: 'Scoped context handoff', register: registerHandoff };
+const plugin = { id: 'shoal-context-handoff', name: 'Scoped context handoff', register: registerHandoff };
+export default plugin;

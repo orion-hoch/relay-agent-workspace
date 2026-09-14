@@ -1,21 +1,26 @@
 "use client";
 import { useMemo } from "react";
-import { GitBranch, Waves } from "lucide-react";
+import { GitBranch, ListTodo, Waves } from "lucide-react";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { useWorkspaceMembers } from "@/lib/workspace-members";
 import { useBuzz } from "@/lib/buzz/store";
 import type { RunMode, RunRecord, RunStatus } from "@/lib/buzz/types";
 
+export type ChatMode = RunMode | "task";
+
 export function ChatDeepDiveControl({
   mode,
   onChange,
   disabled = false,
+  taskAvailable = true,
 }: {
-  mode: RunMode;
-  onChange: (mode: RunMode) => void;
+  mode: ChatMode;
+  onChange: (mode: ChatMode) => void;
+  taskAvailable?: boolean;
   disabled?: boolean;
 }) {
   return (
+    <>
     <button
       type="button"
       className="chat-deep-dive-control"
@@ -28,6 +33,8 @@ export function ChatDeepDiveControl({
       <Waves size={15} />
       <span>Deep dive</span>
     </button>
+    {taskAvailable && <button type="button" className="chat-deep-dive-control" aria-label="Task" aria-pressed={mode === "task"} disabled={disabled} onClick={() => onChange(mode === "task" ? "quick" : "task")}><ListTodo size={15}/><span>Task</span></button>}
+    </>
   );
 }
 const active = new Set<RunStatus>(["queued", "preparing", "running", "awaiting"]);
@@ -36,6 +43,8 @@ const labels: Record<RunStatus, string> = {
   preparing: "Preparing",
   running: "Working",
   awaiting: "Needs review",
+  needs_input: "Needs input",
+  paused: "Progress saved",
   completed: "Complete",
   failed: "Blocked",
   cancelled: "Cancelled",
@@ -46,11 +55,33 @@ const priority: Record<RunStatus, number> = {
   preparing: 5,
   queued: 4,
   failed: 3,
+  needs_input: 3,
+  paused: 3,
   completed: 2,
   cancelled: 1,
 };
 
-/** Select a real room run and its recorded subtasks, with a bounded cycle-safe walk. */
+/** The given roots plus their recorded subtasks, in a bounded cycle-safe breadth-first order. */
+export function walkRuns(runs: readonly RunRecord[], roots: readonly RunRecord[]): RunRecord[] {
+  const children = new Map<string, RunRecord[]>();
+  for (const run of runs) {
+    if (!run.parentRunId || run.kind !== "subtask") continue;
+    const list = children.get(run.parentRunId) ?? [];
+    list.push(run);
+    children.set(run.parentRunId, list);
+  }
+  const result: RunRecord[] = [], seen = new Set<string>(), queue = roots.slice(0, 256);
+  for (let index = 0; index < queue.length && result.length < 256; index++) {
+    const run = queue[index];
+    if (seen.has(run.id)) continue;
+    seen.add(run.id);
+    result.push(run);
+    for (const child of children.get(run.id) ?? [])
+      if (!seen.has(child.id) && queue.length < 1024) queue.push(child);
+  }
+  return result;
+}
+/** Select a real room run and its recorded subtasks. */
 export function selectDeepDiveRuns(runs: readonly RunRecord[], room: string): RunRecord[] {
   const roots = runs
     .filter((run) => run.room === room && run.mode === "deep" && run.kind !== "subtask")
@@ -61,27 +92,7 @@ export function selectDeepDiveRuns(runs: readonly RunRecord[], room: string): Ru
     );
   const root = roots[0];
   if (!root) return [];
-  const children = new Map<string, RunRecord[]>();
-  for (const run of runs) {
-    if (!run.parentRunId || run.kind !== "subtask") continue;
-    const list = children.get(run.parentRunId) ?? [];
-    list.push(run);
-    children.set(run.parentRunId, list);
-  }
-  const result: RunRecord[] = [],
-    seen = new Set<string>(),
-    queue = (root.triggerMessageId
-      ? roots.filter(candidate => candidate.triggerMessageId === root.triggerMessageId)
-      : [root]).slice(0, 256);
-  for (let index = 0; index < queue.length && result.length < 256; index++) {
-    const run = queue[index];
-    if (seen.has(run.id)) continue;
-    seen.add(run.id);
-    result.push(run);
-    for (const child of children.get(run.id) ?? [])
-      if (!seen.has(child.id) && queue.length < 1024) queue.push(child);
-  }
-  return result;
+  return walkRuns(runs, root.triggerMessageId ? roots.filter(candidate => candidate.triggerMessageId === root.triggerMessageId) : [root]);
 }
 
 export function ChatDeepDiveActivity({ room }: { room: string }) {
@@ -115,7 +126,7 @@ export function ChatDeepDiveActivity({ room }: { room: string }) {
         <GitBranch size={14} />
         <span>Deep dive</span>
         <output aria-live="polite" aria-atomic="true">
-          {state} · {participants.length} {participants.length === 1 ? "agent" : "agents"}
+          {state} / {participants.length} {participants.length === 1 ? "agent" : "agents"}{tree.some(run=>run.kind==='subtask') ? ` / ${tree.filter(run=>run.kind==='subtask').length} workers` : ''}
         </output>
       </div>
       <div className="chat-deep-dive-participants" aria-label="Participating agents">
@@ -126,8 +137,8 @@ export function ChatDeepDiveActivity({ room }: { room: string }) {
             <span
               className="chat-deep-dive-participant"
               key={run.agentId}
-              title={`${name} · ${labels[run.status]}`}
-              aria-label={`${name} · ${labels[run.status]}`}
+              title={`${name} / ${labels[run.status]}`}
+              aria-label={`${name} / ${labels[run.status]}`}
             >
               {member?.kind === "agent" ? (
                 <AgentAvatar

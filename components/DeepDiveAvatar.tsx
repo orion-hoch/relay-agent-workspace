@@ -5,9 +5,10 @@ import { MemberAvatar } from "@/components/MemberAvatar";
 import { useWorkspaceMembers, type WorkspaceMember } from "@/lib/workspace-members";
 import { useBuzz } from "@/lib/buzz/store";
 import type { RunRecord } from "@/lib/buzz/types";
+import { walkRuns } from "@/app/components/ChatDeepDiveControl";
 
 /** Resolve this result's actual group, never the latest run in its room. */
-export function resultParticipantIds(runs: readonly RunRecord[], runId: string): string[] {
+function resultParticipantIds(runs: readonly RunRecord[], runId: string): string[] {
   const byId = new Map(runs.map((run) => [run.id, run]));
   let root = byId.get(runId);
   if (!root) return [];
@@ -22,34 +23,10 @@ export function resultParticipantIds(runs: readonly RunRecord[], runId: string):
   if (root.mode !== "deep") return [];
   const selected = root;
   const group = selected.triggerMessageId
-    ? runs.filter(
-        (run) =>
-          run.mode === "deep" &&
-          run.kind !== "subtask" &&
-          run.room === selected.room &&
-          run.triggerMessageId === selected.triggerMessageId,
-      )
+    ? runs.filter((run) => run.mode === "deep" && run.kind !== "subtask" && run.room === selected.room && run.triggerMessageId === selected.triggerMessageId)
     : [selected];
-  const children = new Map<string, RunRecord[]>();
-  for (const run of runs) {
-    if (run.kind !== "subtask" || !run.parentRunId) continue;
-    const list = children.get(run.parentRunId) ?? [];
-    list.push(run);
-    children.set(run.parentRunId, list);
-  }
   // Keep the result's actual author first, independent of store arrival order.
-  const queue = [selected, ...group.filter((run) => run.id !== selected.id)].slice(0, 256);
-  const seen = new Set<string>(),
-    ids = new Set<string>();
-  for (let index = 0; index < queue.length && seen.size < 256; index++) {
-    const run = queue[index];
-    if (seen.has(run.id)) continue;
-    seen.add(run.id);
-    ids.add(run.agentId);
-    for (const child of children.get(run.id) ?? [])
-      if (!seen.has(child.id) && queue.length < 1024) queue.push(child);
-  }
-  return [...ids];
+  return [...new Set(walkRuns(runs, [selected, ...group.filter((run) => run.id !== selected.id)]).map((run) => run.agentId))];
 }
 
 export function DeepDiveAvatar({

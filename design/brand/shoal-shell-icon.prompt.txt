@@ -1,8 +1,0 @@
-Use case: precise-object-edit.
-Create the final square Shoal app icon concept from the supplied clay scallop seashell image.
-
-KEEP the single warm peach and ivory seashell: same broad rounded fan silhouette, 9 chunky raised ribs, small bottom hinge, soft coral recesses, matte handmade stop-motion clay texture, sculpted depth, and gentle studio lighting. No face or eyes.
-
-CHANGE THE BACKGROUND ONLY: replace the entire grey checkerboard with ONE perfectly uniform warm off-white background, hex #F7F4EF. The finished PNG must be fully opaque everywhere. The background is a solid uninterrupted flat ivory field from edge to edge. Absolutely no checkerboard, no transparency, no alpha cutout, no grid, and no patterned background. Do not represent or illustrate transparency.
-
-Keep the complete shell centered with clear margins on all four sides. No square tile inset, no border, no ocean scene, no sand, no ground plane, no extra objects, no text, no letters, no logo, no watermark. Deliver one polished usable square icon image.

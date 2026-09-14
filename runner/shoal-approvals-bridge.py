@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Relay native OpenClaw exec approvals to Shoal. No command execution or auto-approval.
 
-SHOAL_API=http://127.0.0.1:5173
+SHOAL_API=http://127.0.0.1:3000
 SHOAL_RUNNER_TOKEN=... (or BUZZ_RUNNER_TOKEN)
 OPENCLAW_COMMAND_JSON='["openclaw"]'  # fixed trusted argv prefix, never a shell
 OPENCLAW_GATEWAY_URL=ws://127.0.0.1:18789 (optional)
@@ -57,7 +57,7 @@ def action_equal(record, native):
 
 class Bridge:
     def __init__(self):
-        self.api_url = os.environ.get("SHOAL_API", os.environ.get("BUZZ_API", "http://127.0.0.1:5173")).rstrip("/")
+        self.api_url = os.environ.get("SHOAL_API", os.environ.get("BUZZ_API", "http://127.0.0.1:3000")).rstrip("/")
         self.token = os.environ.get("SHOAL_RUNNER_TOKEN", os.environ.get("BUZZ_RUNNER_TOKEN", ""))
         self.command = json.loads(os.environ.get("OPENCLAW_COMMAND_JSON", '["openclaw"]'))
         if not self.token:

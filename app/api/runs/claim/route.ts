@@ -1,56 +1,71 @@
-import { env } from 'cloudflare:workers';
-import { type BuzzEnv, body, emit, ensureSchema, fail, mapRun, mapTask, now, ok, runnerAuthorized } from '@/lib/buzz/db';
+import {checkSharedSources,collaborators} from '@/lib/server/collaboration';
+import {agentWorkspace} from '@/lib/server/agent-workspace';
+import { createHash } from 'node:crypto';
+import { agentHomeId, modelFitsHome } from '@/lib/model-home';
+import { assertEndpoint } from '@/lib/server/network';
+import { userById, isAdmin } from '@/lib/server/team';
+import { canUseAgent, canReadRoom } from '@/lib/server/access';
+import { env } from '@/lib/server/env';
+import { body, emit, fail, mapRun, now, ok } from '@/lib/buzz/db';
+import { configuredModels, selectedModel, retrievalEnvironment, assertModelEndpoint } from '@/lib/buzz/models';
 import { buildPacket, getAgent } from '@/lib/buzz/context';
-import { canUseTaskContext } from '@/lib/buzz/context-scope';
 import { failRun, leaseUntil } from '@/lib/buzz/runs';
 export const dynamic = 'force-dynamic';
 export async function POST(request: Request) {
-  const e = env as unknown as BuzzEnv;
-  if (!runnerAuthorized(request, e)) return fail('Runner token required.', 401);
-  await ensureSchema(e);
+  if (request.headers.get('x-shoal-device') !== 'local') return fail('Runner token required.', 401);
   const p = await body<{ runnerId?: string }>(request);
   if (!p?.runnerId) return fail('Runner identity required.');
-  const expired = await e.DB.prepare("UPDATE runs SET status='failed', error='The runner disconnected. Review any completed actions before retrying.', ended_at=?, lease_until=NULL WHERE status IN ('preparing','running','awaiting') AND lease_until < ? RETURNING id").bind(now(), now()).all<{ id: string }>();
-  for (const r of expired.results) await failRun(e, r.id, 'The runner disconnected. Review any completed actions before retrying.');
-  if (!e.BUZZ_OPENCLAW_URL) return fail('OpenClaw is not configured; agent work will stay queued.', 503);
-  const row = await e.DB.prepare("UPDATE runs SET status='preparing', started_at=?, runner_id=?, attempt=attempt+1, last_seq=0, lease_until=? WHERE id=(SELECT id FROM runs WHERE status='queued' ORDER BY created_at LIMIT 1) AND status='queued' RETURNING *")
+  const expired = await env.DB.prepare("UPDATE runs SET status='failed', error='The runner disconnected. Review any completed actions before retrying.', ended_at=?, lease_until=NULL WHERE status IN ('preparing','running','awaiting') AND lease_until < ? RETURNING id").bind(now(), now()).all<{ id: string }>();
+  for (const r of expired.results) await failRun(env, r.id, 'The runner disconnected. Review any completed actions before retrying.');
+  const row = await env.DB.prepare("UPDATE runs SET status='preparing', started_at=?, runner_id=?, attempt=attempt+1, last_seq=0, lease_until=? WHERE id=(SELECT id FROM runs WHERE status='queued' ORDER BY created_at LIMIT 1) AND status='queued' RETURNING *")
     .bind(now(), p.runnerId.slice(0, 120), leaseUntil()).first<Record<string, unknown>>();
   if (!row) return ok({ run: null });
   const run = mapRun(row);
   try {
-    const agent = await getAgent(e, run.agentId);
+    const agent = await getAgent(env, run.agentId);
     if (!agent || agent.data.paused) throw new Error('The requested agent is missing or paused.');
-    if (!canUseTaskContext(agent, run.taskId ?? null)) throw new Error(`${agent.name} is not granted this Shell task's stored context.`);
-    let objective = ''; let contract: string | null = null;
-    if (run.kind === 'chat') {
-      const trigger = run.triggerMessageId ? await e.DB.prepare('SELECT body FROM messages WHERE id = ?').bind(run.triggerMessageId).first<{ body: string }>() : null;
-      if (!trigger) throw new Error('The original message is missing. Send a new request.');
-      objective = trigger.body;
-    } else {
-      const taskRow = await e.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(run.taskId).first<Record<string, unknown>>();
-      if (!taskRow) throw new Error('The task is missing.');
-      const task = mapTask(taskRow);
-      objective = `Task ${task.id}: ${task.title}\n\n${task.description}`;
-      contract = [task.criteria ? `Acceptance criteria:\n${task.criteria}` : '', task.comments.length ? `Discussion:\n${task.comments.slice(-6).map((c) => `- ${c}`).join('\n')}` : '', 'Return the outcome, cited evidence, actual checks and unresolved questions.'].filter(Boolean).join('\n\n');
-    }
+    const requester=await userById(typeof row.requested_by==='string'?row.requested_by:'you');
+    if (!requester?.active || !canUseAgent(requester,agent) || !await canReadRoom(env,requester,run.room || null)) throw new Error('The requester no longer has access to this agent or conversation.');
+    const trigger = run.triggerMessageId ? await env.DB.prepare('SELECT body FROM messages WHERE id = ?').bind(run.triggerMessageId).first<{ body: string }>() : null;
+    if (!trigger) throw new Error('The original message is missing. Send a new request.');
+    const objective = trigger.body;
+    let contract: string | null = null;
     if (run.parentRunId) {
-      const previous = await e.DB.prepare('SELECT result, error FROM runs WHERE id=?').bind(run.parentRunId).first<{ result?: string; error?: string }>();
-      contract = `${contract || ''}\nContinuation of ${run.parentRunId}. Preserve previous work; inspect action receipts before repeating any action.\nPrevious outcome:\n${(previous?.result || previous?.error || 'Interrupted; inspect the existing session.').slice(-8000)}`;
+      const previous = await env.DB.prepare('SELECT result, error FROM runs WHERE id=?').bind(run.parentRunId).first<{ result?: string; error?: string }>();
+      contract = `Continuation of ${run.parentRunId}. Preserve previous work; inspect action receipts before repeating any action.\nPrevious outcome:\n${(previous?.result || previous?.error || 'Interrupted; inspect the existing session.').slice(-8000)}`;
     }
-    const runtimeAgent = agent.id === 'nova' ? 'product' : agent.id === 'iris' ? 'support' : (e.BUZZ_OPENCLAW_AGENT || 'main');
-    const model = `openclaw/${runtimeAgent}`;
+    if(typeof row.task_id==='string'){
+      const repository=await env.DB.prepare("SELECT id FROM connections WHERE id=? AND kind='git'").bind('git:'+row.task_id).first();
+      contract=[repository?'Repository files are checked out in /workspace. Inspect and edit them as requested. The user controls Git commits and pushes in the task UI.':'', 'Work toward the goal using available tools. Inspect action results. Report the outcome, files created, and remaining work or blockers. Claim completion only with evidence.',contract].filter(Boolean).join('\n\n');
+    }
+    const connectionId = typeof row.connection_id === 'string' ? row.connection_id : run.model;
+    const inference = (await configuredModels(env, requester.id)).find(item => item.id === connectionId) || (!connectionId ? await selectedModel(env, agent.id) : null);
+    if (!inference) throw new Error('This run’s model connection no longer exists. Choose another model and retry.');
+    if (!modelFitsHome(inference, agentHomeId(agent.data))) throw new Error('The agent’s home changed. Choose a model in its current home and retry.');
+    await assertModelEndpoint(env,inference);
+    if (inference.error) throw new Error(inference.error);
+    if (inference.execution==='openclaw') {if(!isAdmin(requester))throw new Error('Native tool runtimes require an admin.');if(env.BUZZ_OPENCLAW_URL)await assertEndpoint(env,env.BUZZ_OPENCLAW_URL);}
+    if (run.model && run.model !== inference.model) throw new Error('The served model changed after this run was queued. Retry to use the new configuration.');
+    if (inference.execution === 'openclaw' && !env.BUZZ_OPENCLAW_URL) throw new Error('Configure the OpenClaw gateway before using this agent connection.');
     // OpenClaw adds ~8K tokens of native instructions; leave room for tool results in the 32K model window.
-    const budget = run.mode === 'deep' ? 20480 : 8192;
-    const sessionRoot = run.taskId ?? run.triggerMessageId ?? run.id;
-    const packet = await buildPacket(e, { agent, objective, room: run.room, taskContract: contract, budgetTokens: budget, outputReserve: run.mode === 'deep' ? 4096 : 2048, sessionKey: `shoal:${sessionRoot}:${agent.id}`, backend: 'openclaw', model, mode: run.mode, runId: run.id });
-    await e.DB.prepare("UPDATE runs SET status='running', backend='openclaw', model=?, packet=?, estimated_input_tokens=?, lease_until=? WHERE id=? AND attempt=?")
-      .bind(model, JSON.stringify(packet), packet.estimatedTokens, leaseUntil(), run.id, run.attempt).run();
-    await e.DB.prepare('INSERT INTO run_events(run_id,type,payload,ts) VALUES (?,?,?,?)').bind(run.id, 'context.ready', JSON.stringify({ mode: run.mode, estimatedTokens: packet.estimatedTokens, budgetTokens: budget, evidence: packet.evidence.length, droppedEvidence: packet.droppedEvidence, history: packet.historyMessages, rulesVersion: packet.rulesVersion }), now()).run();
-    const updated = mapRun((await e.DB.prepare('SELECT * FROM runs WHERE id=?').bind(run.id).first<Record<string, unknown>>())!);
-    await emit(e, 'run.started', { run: updated });
-    return ok({ run: updated, packet });
+    const budget = Math.min(run.mode === 'deep' ? 65536 : 16384, inference.contextWindow - (inference.execution === 'openclaw' ? 8192 : 0));
+    if (budget < 2048) throw new Error('The configured context window is too small for this runtime.');
+    const outputReserve = Math.min(run.mode === 'deep' ? 4096 : 2048, Math.floor(budget / 3));
+    const sandboxScope = inference.execution==='vllm' && requester.role!=='viewer' ? createHash('sha256').update(JSON.stringify([requester.id,agent.id,run.room || run.id])).digest('hex') : undefined;
+    if(sandboxScope)await checkSharedSources(env,requester,agent.id,run.room || null,agent);
+    const workspace=sandboxScope ? await agentWorkspace(env,agent,typeof row.task_id==='string'?row.task_id:undefined) : undefined;
+    const peers=sandboxScope ? await collaborators(env,requester,agent.id,run.room || null) : [];
+    const packet = await buildPacket({ ...await retrievalEnvironment(env), BUZZ_MODEL: inference.model, BUZZ_VLLM_URL: inference.url, BUZZ_VLLM_TOKEN: inference.token }, { agent, objective, collaborators:peers.map(agent=>agent.name), inferenceModel:inference.model, toolsEnabled:!!sandboxScope, workspace, repositoryEnabled:!!sandboxScope && typeof row.task_id==='string', room: run.room, taskContract: contract, budgetTokens: budget, outputReserve, sessionKey: `shoal:${run.triggerMessageId}:${agent.id}`, backend: inference.execution, model: inference.execution === 'openclaw' ? `openclaw/${env.BUZZ_OPENCLAW_AGENT || 'main'}` : inference.model, mode: run.mode, runId: run.id });
+    packet.inferenceModel = inference.model;
+    await env.DB.prepare("UPDATE runs SET status='running', backend=?, model=?, packet=?, estimated_input_tokens=?, lease_until=? WHERE id=? AND attempt=? AND status='preparing'")
+      .bind(inference.execution, inference.model, JSON.stringify(packet), packet.estimatedTokens, leaseUntil(), run.id, run.attempt).run();
+    await env.DB.prepare('INSERT INTO run_events(run_id,type,payload,ts) VALUES (?,?,?,?)').bind(run.id, 'context.ready', JSON.stringify({ mode: run.mode, estimatedTokens: packet.estimatedTokens, budgetTokens: budget, evidence: packet.evidence.length, droppedEvidence: packet.droppedEvidence, history: packet.historyMessages, rulesVersion: packet.rulesVersion }), now()).run();
+    const updated = mapRun((await env.DB.prepare('SELECT * FROM runs WHERE id=?').bind(run.id).first<Record<string, unknown>>())!);
+    if (updated.status !== 'running') return ok({ run: null });
+    await emit(env, 'run.started', { run: updated });
+    return ok({ run: updated, packet, execution: { baseUrl: inference.url, token: inference.token || '', runtimeModel: inference.runtimeModel, provider: inference.provider, agentId:agent.id, canCollaborate:peers.length>0, canCheckoutRepository:!!sandboxScope && typeof row.task_id==='string', sandboxScope, workspace } });
   } catch (error) {
-    await failRun(e, run.id, error instanceof Error ? error.message : 'Context assembly failed.');
+    await failRun(env, run.id, error instanceof Error ? error.message : 'Context assembly failed.');
     return ok({ run: null });
   }
 }

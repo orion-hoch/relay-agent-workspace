@@ -1,0 +1,9 @@
+services:
+  shoal:
+    command: ["node", "scripts/start.mjs", "--lan"]
+    environment:
+      SHOAL_BIND: 127.0.0.1
+      SHOAL_HTTPS_PORT: 8443
+      SHOAL_LAN_HOSTS: ${SHOAL_LAN_HOSTS:-}
+    ports:
+      - "8443:8443"

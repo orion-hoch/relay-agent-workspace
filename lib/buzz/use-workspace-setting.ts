@@ -1,12 +1,12 @@
 'use client';
-import { useCallback, useRef, type SetStateAction } from 'react';
+import { useCallback, useRef, useLayoutEffect, type SetStateAction } from 'react';
 import { buzz, useBuzz } from './store';
 
 export function useWorkspaceSetting<T>(key: string, initial: T): [T, (value: SetStateAction<T>) => void] {
   const { uiState, loaded } = useBuzz();
   const current = useRef(initial);
   const value = (uiState?.[key] ?? initial) as T;
-  current.current = value;
+  useLayoutEffect(() => { current.current = value; }, [value]);
   const set = useCallback((update: SetStateAction<T>) => {
     if (!loaded) { window.dispatchEvent(new CustomEvent('shoal:notice', { detail: 'Workspace is loading. Try again in a moment.' })); return; }
     const next = typeof update === 'function' ? (update as (value: T) => T)(current.current) : update;

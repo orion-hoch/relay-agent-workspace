@@ -1,10 +1,7 @@
 import type { NextConfig } from 'next';
-import path from 'node:path';
 const nextConfig: NextConfig = {
+  agentRules: false,
+  serverExternalPackages: ['pg', 'mysql2', 'mammoth', 'pdfjs-dist', '@aws-sdk/client-s3'],
   experimental: { proxyClientMaxBodySize: "26mb" },
-  webpack(config, { webpack }) {
-    config.plugins.push(new webpack.NormalModuleReplacementPlugin(/^cloudflare:workers$/, path.resolve(process.cwd(), 'lib/vercel-env.ts')));
-    return config;
-  },
 };
 export default nextConfig;
